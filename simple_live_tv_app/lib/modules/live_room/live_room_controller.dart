@@ -159,7 +159,9 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
 
       initDanmau();
       liveDanmaku.start(detail.value?.danmakuData);
-    } catch (e) {
+    } catch (e, st) {
+      addPlayerLog('loadData error: $e');
+      addPlayerLog('stack: $st');
       SmartDialog.showToast(e.toString());
     } finally {
       SmartDialog.dismiss(status: SmartStatus.loading);
@@ -194,8 +196,10 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
       }
 
       getPlayUrl();
-    } catch (e) {
+    } catch (e, st) {
       Log.logPrint(e);
+      addPlayerLog('getPlayQualites error: $e');
+      addPlayerLog('stack: $st');
       SmartDialog.showToast("无法读取播放清晰度");
     }
   }
@@ -232,20 +236,24 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     errorMsg.value = "";
     // 初始化播放器并设置 ao 参数
     await initializePlayer();
+    final url = playUrls[currentLineIndex];
+    addPlayerLog('open media: line=${currentLineIndex + 1}, quality=${currentQualityInfo.value}');
+    addPlayerLog('url: $url');
     player.open(
       Media(
-        playUrls[currentLineIndex],
+        url,
         httpHeaders: playHeaders,
       ),
     );
 
-    Log.d("播放链接\r\n：${playUrls[currentLineIndex]}");
+    Log.d("播放链接\r\n：$url");
   }
 
   @override
   void mediaEnd() async {
     if (mediaErrorRetryCount < 2) {
       Log.d("播放结束，尝试第${mediaErrorRetryCount + 1}次刷新");
+      addPlayerLog('media end, retry ${mediaErrorRetryCount + 1}');
       if (mediaErrorRetryCount == 1) {
         //延迟一秒再刷新
         await Future.delayed(const Duration(seconds: 1));
@@ -257,6 +265,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     }
 
     Log.d("播放结束");
+    addPlayerLog('media end');
     // 遍历线路，如果全部链接都断开就是直播结束了
     if (playUrls.length - 1 == currentLineIndex) {
       liveStatus.value = false;
@@ -272,6 +281,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   void mediaError(String error) async {
     if (mediaErrorRetryCount < 2) {
       Log.d("播放失败，尝试第${mediaErrorRetryCount + 1}次刷新");
+      addPlayerLog('media error retry ${mediaErrorRetryCount + 1}: $error');
       if (mediaErrorRetryCount == 1) {
         //延迟一秒再刷新
         await Future.delayed(const Duration(seconds: 1));
@@ -284,6 +294,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
 
     if (playUrls.length - 1 == currentLineIndex) {
       errorMsg.value = "播放失败";
+      addPlayerLog('media error final: $error');
       SmartDialog.showToast("播放失败:$error");
     } else {
       //currentLineIndex += 1;

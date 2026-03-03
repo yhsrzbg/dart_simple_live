@@ -65,6 +65,9 @@ class AppSettingsController extends GetxController {
     playerAutoPause.value = LocalStorageService.instance
         .getValue(LocalStorageService.kPlayerAutoPause, false);
 
+    playerLogOverlay.value = LocalStorageService.instance
+        .getValue(LocalStorageService.kPlayerLogOverlay, false);
+
     autoFullScreen.value = LocalStorageService.instance
         .getValue(LocalStorageService.kAutoFullScreen, false);
 
@@ -224,6 +227,13 @@ class AppSettingsController extends GetxController {
     playerAutoPause.value = e;
     LocalStorageService.instance
         .setValue(LocalStorageService.kPlayerAutoPause, e);
+  }
+
+  var playerLogOverlay = false.obs;
+  void setPlayerLogOverlay(bool e) {
+    playerLogOverlay.value = e;
+    LocalStorageService.instance
+        .setValue(LocalStorageService.kPlayerLogOverlay, e);
   }
 
   var autoFullScreen = false.obs;

@@ -172,6 +172,22 @@ class SettingsPage extends GetView<SettingsController> {
         AppStyle.vGap24,
         Obx(
           () => SettingsItemWidget(
+            foucsNode: controller.playerLogOverlayFocusNode,
+            autofocus: controller.playerLogOverlayFocusNode.isFoucsed.value,
+            title: "播放器日志叠加",
+            items: const {
+              0: "关",
+              1: "开",
+            },
+            value: AppSettingsController.instance.playerLogOverlay.value ? 1 : 0,
+            onChanged: (e) {
+              AppSettingsController.instance.setPlayerLogOverlay(e == 1);
+            },
+          ),
+        ),
+        AppStyle.vGap24,
+        Obx(
+          () => SettingsItemWidget(
             foucsNode: controller.scaleFoucsNode,
             autofocus: controller.scaleFoucsNode.isFoucsed.value,
             title: "画面比例",

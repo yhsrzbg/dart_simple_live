@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -153,7 +154,49 @@ class LiveRoomPage extends GetView<LiveRoomController> {
             ),
           ),
         ),
+        buildPlayerLogOverlay(),
       ],
     );
+  }
+
+  Widget buildPlayerLogOverlay() {
+    return Obx(() {
+      if (!AppSettingsController.instance.playerLogOverlay.value) {
+        return const SizedBox.shrink();
+      }
+
+      final total = controller.playerLogs.length;
+      final displayCount = math.min(total, 28);
+      final logs = controller.playerLogs.take(displayCount).toList().reversed;
+
+      return IgnorePointer(
+        child: Align(
+          alignment: Alignment.topLeft,
+          child: Container(
+            margin: const EdgeInsets.all(12),
+            padding: const EdgeInsets.all(10),
+            width: 760,
+            constraints: const BoxConstraints(maxHeight: 360),
+            decoration: BoxDecoration(
+              color: Colors.black.withOpacity(0.72),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: Colors.white24),
+            ),
+            child: SingleChildScrollView(
+              reverse: true,
+              child: Text(
+                logs.join('\n'),
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 12,
+                  height: 1.25,
+                  fontFamily: 'monospace',
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+    });
   }
 }

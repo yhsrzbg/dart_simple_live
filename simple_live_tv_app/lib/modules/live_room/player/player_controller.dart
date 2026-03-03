@@ -37,13 +37,20 @@ mixin PlayerMixin {
   }
 
   /// 视频控制器
+  ///
+  /// 实测在部分 Android TV（如 Shield/Tegra X1）上：
+  /// - `vo: mediacodec_embed + hwdec: mediacodec` 可能出现色彩异常；
+  /// - `vo: mediacodec_embed + hwdec: mediacodec-copy` 可能直接黑屏。
+  ///
+  /// 因此兼容模式下硬解使用 `gpu + mediacodec-copy`（copy-back 路径），
+  /// 非兼容模式保持原先 surface attach 时机，避免引入全局回归。
   late final videoController = VideoController(
     player,
     configuration: AppSettingsController.instance.playerCompatMode.value
         ? (AppSettingsController.instance.hardwareDecode.value
             ? const VideoControllerConfiguration(
-                vo: 'mediacodec_embed',
-                hwdec: 'mediacodec',
+                vo: 'gpu',
+                hwdec: 'mediacodec-copy',
               )
             : const VideoControllerConfiguration(
                 vo: 'gpu',
@@ -97,6 +104,23 @@ mixin PlayerStateMixin on PlayerMixin {
 
   var showQualites = false.obs;
   var showLines = false.obs;
+
+  /// 播放器日志（用于屏幕覆盖层展示）
+  RxList<String> playerLogs = <String>[].obs;
+
+  void addPlayerLog(String message) {
+    final now = DateTime.now();
+    final time =
+        "${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}:${now.second.toString().padLeft(2, '0')}";
+    playerLogs.insert(0, "[$time] $message");
+    if (playerLogs.length > 120) {
+      playerLogs.removeRange(120, playerLogs.length);
+    }
+  }
+
+  void clearPlayerLogs() {
+    playerLogs.clear();
+  }
 
   /// 隐藏控制器
   void hideControls() {
@@ -244,6 +268,7 @@ class PlayerController extends BaseController
   void initStream() {
     _errorSubscription = player.stream.error.listen((event) {
       Log.d("播放器错误：$event");
+      addPlayerLog("error: $event");
       if (event.contains('no sound.')) {
         return;
       }
@@ -253,15 +278,18 @@ class PlayerController extends BaseController
 
     _completedSubscription = player.stream.completed.listen((event) {
       if (event) {
+        addPlayerLog('completed: true');
         mediaEnd();
       }
     });
     _logSubscription = player.stream.log.listen((event) {
       Log.d("播放器日志：$event");
+      addPlayerLog("mpv: $event");
     });
     _widthSubscription = player.stream.width.listen((event) {
       Log.w(
           'width:$event  W:${(player.state.width)}  H:${(player.state.height)}');
+      addPlayerLog('video width -> $event, state: ${player.state.width}x${player.state.height}');
       width.value = event ?? 0;
       // isVertical.value =
       //     (player.state.height ?? 9) > (player.state.width ?? 16);
@@ -269,6 +297,7 @@ class PlayerController extends BaseController
     _heightSubscription = player.stream.height.listen((event) {
       Log.w(
           'height:$event  W:${(player.state.width)}  H:${(player.state.height)}');
+      addPlayerLog('video height -> $event, state: ${player.state.width}x${player.state.height}');
       height.value = event ?? 0;
       // isVertical.value =
       //     (player.state.height ?? 9) > (player.state.width ?? 16);
@@ -292,6 +321,7 @@ class PlayerController extends BaseController
     Log.w("播放器关闭");
     disposeStream();
     disposeDanmakuController();
+    clearPlayerLogs();
     await resetSystem();
     await player.dispose();
     super.onClose();
