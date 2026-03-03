@@ -37,13 +37,20 @@ mixin PlayerMixin {
   }
 
   /// 视频控制器
+  ///
+  /// NVIDIA Shield(Tegra X1) 在默认渲染路径下容易出现“有声音无画面”，
+  /// 且在 `mediacodec_embed + mediacodec` 时会出现颜色异常。
+  ///
+  /// 这里做两点兼容：
+  /// 1. Android 下延后到拿到视频参数后再附着 Surface，规避黑屏；
+  /// 2. 兼容模式硬解改为 `mediacodec-copy`，规避部分设备直通路径颜色错乱。
   late final videoController = VideoController(
     player,
     configuration: AppSettingsController.instance.playerCompatMode.value
         ? (AppSettingsController.instance.hardwareDecode.value
             ? const VideoControllerConfiguration(
                 vo: 'mediacodec_embed',
-                hwdec: 'mediacodec',
+                hwdec: 'mediacodec-copy',
               )
             : const VideoControllerConfiguration(
                 vo: 'gpu',
@@ -52,7 +59,7 @@ mixin PlayerMixin {
         : VideoControllerConfiguration(
             enableHardwareAcceleration:
                 AppSettingsController.instance.hardwareDecode.value,
-            androidAttachSurfaceAfterVideoParameters: false,
+            androidAttachSurfaceAfterVideoParameters: true,
           ),
   );
 }
