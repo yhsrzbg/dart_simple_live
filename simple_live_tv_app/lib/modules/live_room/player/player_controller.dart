@@ -40,10 +40,15 @@ mixin PlayerMixin {
   late final videoController = VideoController(
     player,
     configuration: AppSettingsController.instance.playerCompatMode.value
-        ? const VideoControllerConfiguration(
-            vo: 'mediacodec_embed',
-            hwdec: 'mediacodec',
-          )
+        ? (AppSettingsController.instance.hardwareDecode.value
+            ? const VideoControllerConfiguration(
+                vo: 'mediacodec_embed',
+                hwdec: 'mediacodec',
+              )
+            : const VideoControllerConfiguration(
+                vo: 'gpu',
+                hwdec: 'no',
+              ))
         : VideoControllerConfiguration(
             enableHardwareAcceleration:
                 AppSettingsController.instance.hardwareDecode.value,
