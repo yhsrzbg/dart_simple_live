@@ -38,18 +38,18 @@ mixin PlayerMixin {
 
   /// 视频控制器
   ///
-  /// 实测在部分 Android TV（如 Shield/Tegra X1）上：
-  /// - `vo: mediacodec_embed + hwdec: mediacodec` 可能出现色彩异常；
-  /// - `vo: mediacodec_embed + hwdec: mediacodec-copy` 可能直接黑屏。
+  /// NVIDIA Shield(Tegra X1) 在默认渲染路径下容易出现“有声音无画面”，
+  /// 且在 `mediacodec_embed + mediacodec` 时会出现颜色异常。
   ///
-  /// 因此兼容模式下硬解使用 `gpu + mediacodec-copy`（copy-back 路径），
-  /// 非兼容模式保持原先 surface attach 时机，避免引入全局回归。
+  /// 这里做两点兼容：
+  /// 1. Android 下延后到拿到视频参数后再附着 Surface，规避黑屏；
+  /// 2. 兼容模式硬解改为 `mediacodec-copy`，规避部分设备直通路径颜色错乱。
   late final videoController = VideoController(
     player,
     configuration: AppSettingsController.instance.playerCompatMode.value
         ? (AppSettingsController.instance.hardwareDecode.value
             ? const VideoControllerConfiguration(
-                vo: 'gpu',
+                vo: 'mediacodec_embed',
                 hwdec: 'mediacodec-copy',
               )
             : const VideoControllerConfiguration(
@@ -59,7 +59,7 @@ mixin PlayerMixin {
         : VideoControllerConfiguration(
             enableHardwareAcceleration:
                 AppSettingsController.instance.hardwareDecode.value,
-            androidAttachSurfaceAfterVideoParameters: false,
+            androidAttachSurfaceAfterVideoParameters: true,
           ),
   );
 }
