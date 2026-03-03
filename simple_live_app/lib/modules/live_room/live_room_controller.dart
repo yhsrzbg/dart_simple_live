@@ -106,6 +106,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   // 开播时长状态变量
   var liveDuration = "00:00:00".obs;
   Timer? _liveDurationTimer;
+  static const int _maxSurfaceReadyRetries = 5;
 
   @override
   void onInit() {
@@ -116,11 +117,16 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     initAutoExit();
     showDanmakuState.value = AppSettingsController.instance.danmuEnable.value;
     followed.value = DBService.instance.getFollowExist("${site.id}_$roomId");
-    loadData();
 
     scrollController.addListener(scrollListener);
 
     super.onInit();
+  }
+
+  @override
+  void onReady() {
+    super.onReady();
+    loadData();
   }
 
   void scrollListener() {
@@ -430,15 +436,28 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
 
     // 初始化播放器并设置 ao 参数
     await initializePlayer();
-
+    await _ensurePlayerSurfaceReady();
     await player.open(Playlist(mediaList));
   }
 
   void setPlayer() async {
     currentLineInfo.value = "线路${currentLineIndex + 1}";
     errorMsg.value = "";
-
+    await _ensurePlayerSurfaceReady();
     await player.jump(currentLineIndex);
+  }
+
+  Future<void> _ensurePlayerSurfaceReady() async {
+    var retry = 0;
+    while (globalPlayerKey.currentState == null && retry < _maxSurfaceReadyRetries) {
+      retry += 1;
+      Log.d("surface_not_ready_retry_$retry");
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+    }
+
+    if (globalPlayerKey.currentState == null) {
+      Log.d("surface_not_ready_retry_exhausted");
+    }
   }
 
   @override
