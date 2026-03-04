@@ -228,16 +228,30 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   }
 
   void setPlayer() async {
+    final stopwatch = Stopwatch()..start();
     currentLineInfo.value = "线路${currentLineIndex + 1}";
     errorMsg.value = "";
+    final currentUrl = playUrls[currentLineIndex];
+    final uri = Uri.tryParse(currentUrl);
+    final maskedUrl = uri == null
+        ? currentUrl
+        : "${uri.scheme}://${uri.host}${uri.hasPort ? ':${uri.port}' : ''}${uri.path}";
+    final headerKeys =
+        playHeaders == null ? "none" : playHeaders!.keys.join(',');
+    Log.i(
+      "setPlayer start: line=${currentLineIndex + 1}, quality=${currentQualityInfo.value}, "
+      "url=$maskedUrl, headerKeys=$headerKeys",
+    );
     // 初始化播放器并设置 ao 参数
     await initializePlayer();
-    player.open(
+    await player.open(
       Media(
-        playUrls[currentLineIndex],
+        currentUrl,
         httpHeaders: playHeaders,
       ),
     );
+    stopwatch.stop();
+    Log.i("setPlayer open done: ${stopwatch.elapsedMilliseconds}ms");
 
     Log.d("播放链接\r\n：${playUrls[currentLineIndex]}");
   }

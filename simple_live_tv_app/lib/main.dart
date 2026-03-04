@@ -1,3 +1,5 @@
+import 'dart:ui';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -25,6 +27,16 @@ import 'package:simple_live_tv_app/services/sync_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  FlutterError.onError = (FlutterErrorDetails details) {
+    Log.e(
+      "FlutterError: ${details.exceptionAsString()}",
+      details.stack ?? StackTrace.current,
+    );
+  };
+  PlatformDispatcher.instance.onError = (Object error, StackTrace stack) {
+    Log.e("Uncaught async error: $error", stack);
+    return false;
+  };
   MediaKit.ensureInitialized();
   await Hive.initFlutter();
   //初始化服务
@@ -41,7 +53,7 @@ void main() async {
 
 Future initServices() async {
   //日志信息
-  CoreLog.enableLog = !kReleaseMode;
+  CoreLog.enableLog = !kReleaseMode || Log.enableDiagLog;
   CoreLog.requestLogType = RequestLogType.short;
   CoreLog.onPrintLog = (level, msg) {
     switch (level) {

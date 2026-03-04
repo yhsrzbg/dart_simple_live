@@ -32,24 +32,37 @@ mixin PlayerMixin {
 
     // media_kit 仓库更新导致的问题，临时解决办法
     if (Platform.isAndroid) {
-      await pp.setProperty('force-seekable', 'yes');
+      try {
+        Log.i("Player init(android): set force-seekable=yes");
+        await pp.setProperty('force-seekable', 'yes');
+      } catch (e, st) {
+        Log.e("Player init(android): setProperty force-seekable failed: $e", st);
+      }
     }
   }
 
   /// 视频控制器
-  late final videoController = VideoController(
-    player,
-    configuration: AppSettingsController.instance.playerCompatMode.value
+  late final videoController = _createVideoController();
+
+  VideoController _createVideoController() {
+    final compatMode = AppSettingsController.instance.playerCompatMode.value;
+    final hardwareDecode = AppSettingsController.instance.hardwareDecode.value;
+    final config = compatMode
         ? const VideoControllerConfiguration(
             vo: 'mediacodec_embed',
             hwdec: 'mediacodec',
           )
         : VideoControllerConfiguration(
-            enableHardwareAcceleration:
-                AppSettingsController.instance.hardwareDecode.value,
+            enableHardwareAcceleration: hardwareDecode,
             androidAttachSurfaceAfterVideoParameters: false,
-          ),
-  );
+          );
+    Log.i(
+      "VideoController config: compatMode=$compatMode, hardwareDecode=$hardwareDecode, "
+      "vo=${config.vo}, hwdec=${config.hwdec}, "
+      "attachSurfaceAfterVideoParameters=${config.androidAttachSurfaceAfterVideoParameters}",
+    );
+    return VideoController(player, configuration: config);
+  }
 }
 mixin PlayerStateMixin on PlayerMixin {
   /// 是否显示弹幕
@@ -235,6 +248,7 @@ class PlayerController extends BaseController
   StreamSubscription? _widthSubscription;
   StreamSubscription? _heightSubscription;
   StreamSubscription? _logSubscription;
+  StreamSubscription? _playingSubscription;
 
   void initStream() {
     _errorSubscription = player.stream.error.listen((event) {
@@ -250,6 +264,10 @@ class PlayerController extends BaseController
       if (event) {
         mediaEnd();
       }
+    });
+    _playingSubscription = player.stream.playing.listen((event) {
+      Log.i(
+          "playing:$event W:${player.state.width} H:${player.state.height} VP:${player.state.videoParams}");
     });
     _logSubscription = player.stream.log.listen((event) {
       Log.d("播放器日志：$event");
@@ -276,6 +294,7 @@ class PlayerController extends BaseController
     _widthSubscription?.cancel();
     _heightSubscription?.cancel();
     _logSubscription?.cancel();
+    _playingSubscription?.cancel();
   }
 
   void mediaEnd() {}

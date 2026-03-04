@@ -5,6 +5,9 @@ import 'package:logger/logger.dart';
 
 class Log {
   static RxList<DebugLogModel> debugLogs = <DebugLogModel>[].obs;
+  static const bool enableDiagLog =
+      bool.fromEnvironment('ENABLE_DIAG_LOG', defaultValue: false);
+  static bool get _enableConsolePrint => kDebugMode || kProfileMode || enableDiagLog;
 
   static Logger logger = Logger(
     printer: PrettyPrinter(
@@ -35,7 +38,7 @@ class Log {
 
   static void logPrint(dynamic obj) {
     //logger.e(obj.toString(), obj, obj?.stackTrace);
-    if (kDebugMode) {
+    if (_enableConsolePrint) {
       print(obj);
     }
   }
