@@ -27,11 +27,14 @@ subprojects {
 }
 
 subprojects { subproject ->
-    subproject.afterEvaluate {
-        if (subproject.hasProperty("android")) {
-            subproject.android {
-                buildToolsVersion "34.0.0"
-            }
+    subproject.plugins.withId("com.android.application") {
+        subproject.android {
+            buildToolsVersion "34.0.0"
+        }
+    }
+    subproject.plugins.withId("com.android.library") {
+        subproject.android {
+            buildToolsVersion "34.0.0"
         }
     }
 }
