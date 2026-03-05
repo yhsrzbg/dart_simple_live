@@ -128,16 +128,18 @@ class Utils {
     var result = await Get.dialog(
       AlertDialog(
         title: Text(title),
-        content: RadioGroup(
-          onChanged: (e) => Get.back(result: e),
-          groupValue: value,
-          child: Column(
-            children: contents
-                .map(
-                  (e) => RadioListTile<T>(title: Text(e.toString()), value: e),
-                )
-                .toList(),
-          ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: contents
+              .map(
+                (e) => RadioListTile<T>(
+                  title: Text(e.toString()),
+                  value: e,
+                  groupValue: value,
+                  onChanged: (v) => Get.back(result: v),
+                ),
+              )
+              .toList(),
         ),
       ),
     );
@@ -152,19 +154,18 @@ class Utils {
     var result = await Get.dialog(
       AlertDialog(
         title: Text(title),
-        content: RadioGroup(
-          onChanged: (e) => Get.back(result: e),
-          groupValue: value,
-          child: Column(
-            children: contents.keys
-                .map(
-                  (e) => RadioListTile<T>(
-                    title: Text((contents[e] ?? '-').tr),
-                    value: e,
-                  ),
-                )
-                .toList(),
-          ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: contents.keys
+              .map(
+                (e) => RadioListTile<T>(
+                  title: Text((contents[e] ?? '-').tr),
+                  value: e,
+                  groupValue: value,
+                  onChanged: (v) => Get.back(result: v),
+                ),
+              )
+              .toList(),
         ),
       ),
     );
