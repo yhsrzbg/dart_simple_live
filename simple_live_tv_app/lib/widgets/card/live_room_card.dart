@@ -6,7 +6,6 @@ import 'package:simple_live_tv_app/app/app_style.dart';
 import 'package:simple_live_tv_app/app/utils.dart';
 import 'package:simple_live_tv_app/widgets/highlight_widget.dart';
 import 'package:simple_live_tv_app/widgets/net_image.dart';
-import 'package:marquee/marquee.dart';
 
 class LiveRoomCard extends StatelessWidget {
   final String cover;
@@ -108,25 +107,17 @@ class LiveRoomCard extends StatelessWidget {
               padding: AppStyle.edgeInsetsH20,
               child: SizedBox(
                 height: 56.w,
-                child: focusNode.isFoucsed.value
-                    ? Marquee(
-                        text: title,
-                        style: AppStyle.textStyleBlack,
-                        startAfter: const Duration(seconds: 1),
-                        velocity: 20,
-                        blankSpace: 200.w,
-                        //decelerationDuration: const Duration(seconds: 2),
-                        scrollAxis: Axis.horizontal,
-                      )
-                    : Container(
-                        alignment: Alignment.centerLeft,
-                        child: Text(
-                          title,
-                          style: AppStyle.textStyleWhite,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ),
+                child: Container(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    title,
+                    style: focusNode.isFoucsed.value
+                        ? AppStyle.textStyleBlack
+                        : AppStyle.textStyleWhite,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
               ),
             ),
             Row(
