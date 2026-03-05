@@ -43,7 +43,7 @@ dependencies:
   shelf: ^1.4.2
   shelf_router: ^1.1.4
   udp: ^5.0.3 #UDP
-  device_info_plus: ^11.4.0 #设备信息
+  device_info_plus: 11.3.1 #设备信息
   wakelock_plus: ^1.4.0 #屏幕常亮，media_kit中自带，但似乎不生效
 
   # 视频播放
