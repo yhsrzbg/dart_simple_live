@@ -19,7 +19,7 @@ dependencies:
   dio: ^5.9.0 #网络请求
   hive: 2.2.3 #持久化存储
   hive_flutter: 1.1.0 #持久化存储
-  logger: ^2.6.1 #日志
+  logger: 2.6.2 #日志
   intl: ^0.20.2 #国际化
   flutter_screenutil: ^5.9.3 #UI适配
   uuid: ^4.5.1 #UUID
@@ -43,7 +43,7 @@ dependencies:
   shelf: ^1.4.2
   shelf_router: ^1.1.4
   udp: ^5.0.3 #UDP
-  device_info_plus: 11.3.1 #设备信息
+  device_info_plus: 11.3.0 #设备信息
   wakelock_plus: ^1.4.0 #屏幕常亮，media_kit中自带，但似乎不生效
 
   # 视频播放
