@@ -43,6 +43,9 @@ jobs:
                   flutter-version: "3.22.x"
                   cache: true
 
+            - name: Enable native assets
+              run: flutter config --enable-native-assets
+
             #更新Flutter的packages
             - name: Restore packages
               run: |
