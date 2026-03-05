@@ -40,8 +40,6 @@ dependencies:
   package_info_plus: ^9.0.0 #包信息
   url_launcher: 6.2.5 #打开链接
   network_info_plus: ^7.0.0
-  shelf: ^1.4.2
-  shelf_router: ^1.1.4
   udp: ^5.0.3 #UDP
   device_info_plus: 11.3.0 #设备信息
   wakelock_plus: ^1.4.0 #屏幕常亮，media_kit中自带，但似乎不生效
@@ -53,6 +51,7 @@ dependencies:
 
 dependency_overrides:
   fading_edge_scrollview: ^4.1.1
+  collection: ^1.19.1
 
 dev_dependencies:
   flutter_test:

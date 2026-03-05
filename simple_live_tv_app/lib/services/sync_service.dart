@@ -15,9 +15,6 @@ import 'package:simple_live_tv_app/models/db/history.dart';
 import 'package:simple_live_tv_app/services/bilibili_account_service.dart';
 import 'package:simple_live_tv_app/services/db_service.dart';
 import 'package:udp/udp.dart';
-import 'package:shelf/shelf.dart' as shelf;
-import 'package:shelf/shelf_io.dart' as shelf_io;
-import 'package:shelf_router/shelf_router.dart';
 import 'package:uuid/uuid.dart';
 
 class SyncService extends GetxService {
@@ -30,11 +27,12 @@ class SyncService extends GetxService {
   NetworkInfo networkInfo = NetworkInfo();
   HttpServer? server;
 
-  var ipAddress = "".obs;
+  var ipAddress = ''.obs;
   var httpRunning = false.obs;
-  var httpErrorMsg = "".obs;
+  var httpErrorMsg = ''.obs;
 
-  var deviceId = "";
+  var deviceId = '';
+
   @override
   void onInit() {
     Log.d('SyncService init');
@@ -44,26 +42,20 @@ class SyncService extends GetxService {
     super.onInit();
   }
 
-  /// 监听来自其他客户端的UDP广播
-  /// - 如果收到广播，回复自己的信息
   void listenUDP() async {
     udp = await UDP.bind(Endpoint.any(port: const Port(udpPort)));
     udp!.asStream().listen((datagram) {
       var str = String.fromCharCodes(datagram!.data);
-      Log.i("Received: $str from ${datagram.address}:${datagram.port}");
+      Log.i('Received: $str from ${datagram.address}:${datagram.port}');
       if (str.startsWith('{') && str.endsWith('}')) {
         var data = json.decode(str);
-
-        //处理Hello的广播
-        if (data["type"] == "hello") {
-          //如果http服务已经启动，就回复自己的信息
+        if (data['type'] == 'hello') {
           if (httpRunning.value) {
             sendInfo();
           }
           return;
         }
       } else if (str == 'Who is SimpleLive?') {
-        //如果http服务已经启动，就回复自己的信息
         if (httpRunning.value) {
           sendInfo();
         }
@@ -71,18 +63,12 @@ class SyncService extends GetxService {
     });
   }
 
-  /// 发送自己的信息
   void sendInfo() async {
-    //var ip = await getLocalIP();
-
     var name = await getDeviceName();
-
     var data = {
-      "id": deviceId,
-      "type": "tv",
-      "name": name,
-      //"address": ip,
-      //"port": httpPort,
+      'id': deviceId,
+      'type': 'tv',
+      'name': name,
     };
 
     await udp!.send(
@@ -91,12 +77,9 @@ class SyncService extends GetxService {
         port: const Port(udpPort),
       ),
     );
-    Log.i("send udp info: $data");
+    Log.i('send udp info: $data');
   }
 
-  /// 读取本地IP
-  /// - 如果是wifi，直接获取wifi的IP
-  /// - 如果是有线，获取所有的IP，找到全部的IP
   Future<String> getLocalIP() async {
     var ip = await networkInfo.getWifiIP();
     if (ip == null || ip.isEmpty) {
@@ -119,7 +102,7 @@ class SyncService extends GetxService {
   }
 
   Future<String> getDeviceName() async {
-    var name = "SimpleLive-TV";
+    var name = 'SimpleLive-TV';
     if (Platform.isAndroid) {
       var info = await deviceInfo.androidInfo;
       name = info.model;
@@ -139,69 +122,94 @@ class SyncService extends GetxService {
     return name;
   }
 
-  /// 初始化HTTP服务
   void initServer() async {
     try {
-      var serverRouter = Router();
-      serverRouter.get('/', _helloRequest);
-      serverRouter.get('/info', _infoRequest);
-      serverRouter.post('/sync/follow', _syncFollowUserReuqest);
-      serverRouter.post('/sync/history', _syncHistoryReuqest);
-      serverRouter.post('/sync/blocked_word', _syncBlockedWordReuqest);
-      serverRouter.post('/sync/account/bilibili', _syncBiliAccountReuqest);
-
-      var server = await shelf_io.serve(
-        serverRouter,
-        InternetAddress.anyIPv4,
-        httpPort,
-      );
-
-      // Enable content compression
-      server.autoCompress = true;
+      server = await HttpServer.bind(InternetAddress.anyIPv4, httpPort);
+      server!.autoCompress = true;
+      server!.listen(_handleHttpRequest);
 
       httpRunning.value = true;
-
       var ip = await getLocalIP();
       ipAddress.value = ip;
 
-      Log.d('Serving at http://$ip:${server.port}');
+      Log.d('Serving at http://$ip:${server!.port}');
     } catch (e) {
       httpErrorMsg.value = e.toString();
       Log.logPrint(e);
     }
   }
 
-  /// 测试服务能否正常访问
-  shelf.Response _helloRequest(shelf.Request request) {
-    return toJsonResponse({
-      'status': true,
-      'message': 'http server is running...',
-      "version":
-          'SimpeLive ${Platform.operatingSystem} v${Utils.packageInfo.version}',
-    });
+  Future<void> _handleHttpRequest(HttpRequest request) async {
+    final method = request.method.toUpperCase();
+    final path = request.uri.path;
+
+    Map<String, dynamic> data;
+    int statusCode = HttpStatus.ok;
+
+    try {
+      if (method == 'GET' && path == '/') {
+        data = _helloRequest();
+      } else if (method == 'GET' && path == '/info') {
+        data = await _infoRequest();
+      } else if (method == 'POST' && path == '/sync/follow') {
+        final body = await utf8.decoder.bind(request).join();
+        data = await _syncFollowUserRequest(request.uri, body);
+      } else if (method == 'POST' && path == '/sync/history') {
+        final body = await utf8.decoder.bind(request).join();
+        data = await _syncHistoryRequest(request.uri, body);
+      } else if (method == 'POST' && path == '/sync/blocked_word') {
+        final body = await utf8.decoder.bind(request).join();
+        data = await _syncBlockedWordRequest(request.uri, body);
+      } else if (method == 'POST' && path == '/sync/account/bilibili') {
+        final body = await utf8.decoder.bind(request).join();
+        data = await _syncBiliAccountRequest(body);
+      } else {
+        statusCode = HttpStatus.notFound;
+        data = {
+          'status': false,
+          'message': 'Not found',
+        };
+      }
+    } catch (e) {
+      statusCode = HttpStatus.internalServerError;
+      data = {
+        'status': false,
+        'message': e.toString(),
+      };
+    }
+
+    await _writeJsonResponse(request.response, data, statusCode: statusCode);
   }
 
-  /// 发送自己的信息
-  Future<shelf.Response> _infoRequest(shelf.Request request) async {
+  Map<String, dynamic> _helloRequest() {
+    return {
+      'status': true,
+      'message': 'http server is running...',
+      'version':
+          'SimpeLive ${Platform.operatingSystem} v${Utils.packageInfo.version}',
+    };
+  }
+
+  Future<Map<String, dynamic>> _infoRequest() async {
     var name = await getDeviceName();
-    return toJsonResponse({
-      "id": deviceId,
+    return {
+      'id': deviceId,
       'type': 'tv',
       'name': name,
       'version': Utils.packageInfo.version,
       'address': ipAddress.value,
       'port': httpPort,
-    });
+    };
   }
 
-  /// 同步关注用户列表
-  Future<shelf.Response> _syncFollowUserReuqest(shelf.Request request) async {
+  Future<Map<String, dynamic>> _syncFollowUserRequest(
+    Uri uri,
+    String body,
+  ) async {
     try {
-      var overlay =
-          int.parse(request.requestedUri.queryParameters['overlay'] ?? '0');
+      var overlay = int.parse(uri.queryParameters['overlay'] ?? '0');
 
-      var body = await request.readAsString();
-      Log.d('_syncFollowUserReuqest: $body');
+      Log.d('_syncFollowUserRequest: $body');
       var jsonBody = json.decode(body);
       if (overlay == 1) {
         await DBService.instance.followBox.clear();
@@ -211,27 +219,24 @@ class SyncService extends GetxService {
         await DBService.instance.followBox.put(user.id, user);
       }
 
-      SmartDialog.showToast('已同步关注用户列表');
+      SmartDialog.showToast('Sync follow list complete');
       EventBus.instance.emit(Constant.kUpdateFollow, 0);
-      return toJsonResponse({
+      return {
         'status': true,
         'message': 'success',
-      });
+      };
     } catch (e) {
-      return toJsonResponse({
+      return {
         'status': false,
         'message': e.toString(),
-      });
+      };
     }
   }
 
-  /// 同步观看记录
-  Future<shelf.Response> _syncHistoryReuqest(shelf.Request request) async {
+  Future<Map<String, dynamic>> _syncHistoryRequest(Uri uri, String body) async {
     try {
-      var overlay =
-          int.parse(request.requestedUri.queryParameters['overlay'] ?? '0');
-      var body = await request.readAsString();
-      Log.d('_syncFollowUserReuqest: $body');
+      var overlay = int.parse(uri.queryParameters['overlay'] ?? '0');
+      Log.d('_syncHistoryRequest: $body');
       var jsonBody = json.decode(body);
       if (overlay == 1) {
         await DBService.instance.historyBox.clear();
@@ -240,7 +245,6 @@ class SyncService extends GetxService {
         var history = History.fromJson(item);
         if (DBService.instance.historyBox.containsKey(history.id)) {
           var old = DBService.instance.historyBox.get(history.id);
-          //如果本地的更新时间比较新，就不更新
           if (old!.updateTime.isAfter(history.updateTime)) {
             continue;
           }
@@ -248,27 +252,27 @@ class SyncService extends GetxService {
         await DBService.instance.addOrUpdateHistory(history);
       }
 
-      SmartDialog.showToast('已同步观看记录');
+      SmartDialog.showToast('Sync history complete');
       EventBus.instance.emit(Constant.kUpdateHistory, 0);
-      return toJsonResponse({
+      return {
         'status': true,
         'message': 'success',
-      });
+      };
     } catch (e) {
-      return toJsonResponse({
+      return {
         'status': false,
         'message': e.toString(),
-      });
+      };
     }
   }
 
-  /// 同步弹幕屏蔽词
-  Future<shelf.Response> _syncBlockedWordReuqest(shelf.Request request) async {
+  Future<Map<String, dynamic>> _syncBlockedWordRequest(
+    Uri uri,
+    String body,
+  ) async {
     try {
-      var overlay =
-          int.parse(request.requestedUri.queryParameters['overlay'] ?? '0');
-      var body = await request.readAsString();
-      Log.d('_syncBlockedWordReuqest: $body');
+      var overlay = int.parse(uri.queryParameters['overlay'] ?? '0');
+      Log.d('_syncBlockedWordRequest: $body');
       var jsonBody = json.decode(body);
       if (overlay == 1) {
         AppSettingsController.instance.clearShieldList();
@@ -276,49 +280,48 @@ class SyncService extends GetxService {
       for (var keyword in jsonBody) {
         AppSettingsController.instance.addShieldList(keyword.trim());
       }
-      SmartDialog.showToast('已同步弹幕屏蔽词');
-      return toJsonResponse({
+      SmartDialog.showToast('Sync blocked words complete');
+      return {
         'status': true,
         'message': 'success',
-      });
+      };
     } catch (e) {
-      return toJsonResponse({
+      return {
         'status': false,
         'message': e.toString(),
-      });
+      };
     }
   }
 
-  /// 同步哔哩哔哩账号
-  Future<shelf.Response> _syncBiliAccountReuqest(shelf.Request request) async {
+  Future<Map<String, dynamic>> _syncBiliAccountRequest(String body) async {
     try {
-      var body = await request.readAsString();
-      Log.d('_syncBiliAccountReuqest: $body');
+      Log.d('_syncBiliAccountRequest: $body');
       var jsonBody = json.decode(body);
       var cookie = jsonBody['cookie'];
       BiliBiliAccountService.instance.setCookie(cookie);
       BiliBiliAccountService.instance.loadUserInfo();
-      SmartDialog.showToast('已同步哔哩哔哩账号');
-      return toJsonResponse({
+      SmartDialog.showToast('Sync bilibili account complete');
+      return {
         'status': true,
         'message': 'success',
-      });
+      };
     } catch (e) {
-      return toJsonResponse({
+      return {
         'status': false,
         'message': e.toString(),
-      });
+      };
     }
   }
 
-  shelf.Response toJsonResponse(Map<String, dynamic> data) {
-    return shelf.Response.ok(
-      json.encode(data),
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      encoding: Encoding.getByName('utf-8'),
-    );
+  Future<void> _writeJsonResponse(
+    HttpResponse response,
+    Map<String, dynamic> data, {
+    int statusCode = HttpStatus.ok,
+  }) async {
+    response.statusCode = statusCode;
+    response.headers.contentType = ContentType.json;
+    response.write(json.encode(data));
+    await response.close();
   }
 
   @override
