@@ -1,0 +1,10 @@
+name: dart_quickjs
+description: Lightweight compatibility wrapper for dart_quickjs API.
+version: 1.0.0
+publish_to: none
+
+environment:
+  sdk: ">=3.4.0 <4.0.0"
+
+dependencies:
+  quickjs: ^1.0.1
