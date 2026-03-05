@@ -7,4 +7,4 @@ environment:
   sdk: ">=3.4.0 <4.0.0"
 
 dependencies:
-  quickjs: ^1.0.1
+  quickjs: 1.0.0
