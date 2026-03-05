@@ -1,0 +1,63 @@
+name: app-build-action-dev-tv
+
+on:
+  push:
+    tags:
+      - "old_dev_tv_v*"
+
+jobs:
+  build-tv:
+    runs-on: macos-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: old_dev
+
+      - name: Download Android keystore
+        id: android_tv_keystore
+        uses: timheuer/base64-to-file@v1.2
+        with:
+          fileName: keystore.jks
+          encodedString: ${{ secrets.TV_KEYSTORE_BASE64 }}
+
+      - name: Create key.properties
+        run: |
+          echo "storeFile=${{ steps.android_tv_keystore.outputs.filePath }}" > simple_live_tv_app/android/key.properties
+          echo "storePassword=${{ secrets.TV_STORE_PASSWORD }}" >> simple_live_tv_app/android/key.properties
+          echo "keyPassword=${{ secrets.TV_KEY_PASSWORD }}" >> simple_live_tv_app/android/key.properties
+          echo "keyAlias=${{ secrets.TV_KEY_ALIAS }}" >> simple_live_tv_app/android/key.properties
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: "zulu"
+          java-version: "17"
+          cache: "gradle"
+
+      - name: Flutter action
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.38.x"
+          cache: true
+
+      - name: Restore packages
+        run: |
+          cd simple_live_tv_app
+          flutter pub get
+
+      - name: Build APK
+        run: |
+          cd simple_live_tv_app
+          flutter build apk --release --split-per-abi
+
+      - name: Upload APK to Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: android_tv
+          path: |
+            simple_live_tv_app/build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk
+            simple_live_tv_app/build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
+            simple_live_tv_app/build/app/outputs/flutter-apk/app-x86_64-release.apk
+
+      - run: echo "This job's status is ${{ job.status }}."
