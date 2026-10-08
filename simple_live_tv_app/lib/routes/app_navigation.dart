@@ -34,6 +34,8 @@ class AppNavigator {
     await Get.toNamed(RoutePath.kBiliBiliQRLogin);
   }
 
+  static Future toDouyuLogin() => Get.toNamed(RoutePath.kDouyuQRLogin)!;
+
   /// 跳转至分类详情
   static void toCategoryDetail(
       {required Site site, required LiveSubCategoryExt category}) {

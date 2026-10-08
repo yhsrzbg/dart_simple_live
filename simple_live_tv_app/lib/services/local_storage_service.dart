@@ -3,6 +3,7 @@ import 'package:hive/hive.dart';
 import 'package:simple_live_tv_app/app/log.dart';
 
 class LocalStorageService extends GetxService {
+  static const String kDouyuCookie = 'DouyuCookie';
   static LocalStorageService get instance => Get.find<LocalStorageService>();
 
   /// 首次运行
@@ -138,7 +139,8 @@ class LocalStorageService extends GetxService {
   T getValue<T>(dynamic key, T defaultValue) {
     try {
       var value = settingsBox.get(key, defaultValue: defaultValue) as T;
-      Log.d("Get LocalStorage：$key\r\n$value");
+      Log.d(
+          "Get LocalStorage：$key\r\n${key == kDouyuCookie ? '<已隐藏>' : value}");
       return value;
     } catch (e) {
       Log.logPrint(e);
@@ -147,7 +149,7 @@ class LocalStorageService extends GetxService {
   }
 
   Future setValue<T>(dynamic key, T value) async {
-    Log.d("Set LocalStorage：$key\r\n$value");
+    Log.d("Set LocalStorage：$key\r\n${key == kDouyuCookie ? '<已隐藏>' : value}");
     return await settingsBox.put(key, value);
   }
 

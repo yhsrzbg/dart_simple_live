@@ -3,6 +3,9 @@ import 'dart:convert';
 import 'dart:math';
 
 import 'package:simple_live_core/src/common/http_client.dart';
+import 'package:simple_live_core/src/common/core_error.dart';
+import 'package:simple_live_core/src/common/core_log.dart';
+import 'package:simple_live_core/src/douyu/douyu_playback_client.dart';
 import 'package:simple_live_core/src/danmaku/douyu_danmaku.dart';
 import 'package:simple_live_core/src/interface/live_danmaku.dart';
 import 'package:simple_live_core/src/interface/live_site.dart';
@@ -15,9 +18,12 @@ import 'package:simple_live_core/src/model/live_search_result.dart';
 import 'package:simple_live_core/src/model/live_room_detail.dart';
 import 'package:simple_live_core/src/model/live_play_quality.dart';
 import 'package:simple_live_core/src/model/live_category_result.dart';
-import 'package:html_unescape/html_unescape.dart';
+
+export 'douyu/douyu_playback_client.dart' show DouyuPlayUrl, DouyuStream;
 
 class DouyuSite implements LiveSite {
+  String cookie = '';
+  DouyuPlaybackClient get _playback => DouyuPlaybackClient();
   @override
   String id = "douyu";
 
@@ -97,17 +103,15 @@ class DouyuSite implements LiveSite {
   @override
   Future<List<LivePlayQuality>> getPlayQualites(
       {required LiveRoomDetail detail}) async {
-    var data = detail.data.toString();
-    data += "&cdn=&rate=-1&ver=Douyu_223061205&iar=1&ive=1&hevc=0&fa=0";
     List<LivePlayQuality> qualities = [];
-    var result = await HttpClient.instance.postJson(
-      "https://www.douyu.com/lapi/live/getH5Play/${detail.roomId}",
-      data: data,
-      formUrlEncoded: true,
-    );
+    final result =
+        await _playback.fetch(roomId: detail.roomId, rate: 0, cookie: cookie);
+    if (result['cdnsWithName'] is! List || result['multirates'] is! List) {
+      throw CoreError('斗鱼清晰度或线路列表无效');
+    }
 
     var cdns = <String>[];
-    for (var item in result["data"]["cdnsWithName"]) {
+    for (var item in result["cdnsWithName"]) {
       cdns.add(item["cdn"].toString());
     }
 
@@ -121,10 +125,10 @@ class DouyuSite implements LiveSite {
       return 0;
     });
 
-    for (var item in result["data"]["multirates"]) {
+    for (var item in result["multirates"]) {
       qualities.add(LivePlayQuality(
         quality: item["name"].toString(),
-        data: DouyuPlayData(item["rate"], cdns),
+        data: DouyuPlayData(int.parse('${item["rate"]}'), cdns),
       ));
     }
     return qualities;
@@ -134,34 +138,34 @@ class DouyuSite implements LiveSite {
   Future<LivePlayUrl> getPlayUrls(
       {required LiveRoomDetail detail,
       required LivePlayQuality quality}) async {
-    var args = detail.data.toString();
     var data = quality.data as DouyuPlayData;
-
-    List<String> urls = [];
+    final sessionCookie = cookie;
+    final client = _playback;
+    final streams = <DouyuStream>[];
+    Object? lastError;
     for (var item in data.cdns) {
-      var url = await getPlayUrl(detail.roomId, args, data.rate, item);
-      if (url.isNotEmpty) {
-        urls.add(url);
+      try {
+        final result = await client.fetch(
+            roomId: detail.roomId,
+            rate: data.rate,
+            cdn: item,
+            cookie: sessionCookie);
+        streams.add(client.stream(result, data.rate, item));
+      } catch (error) {
+        lastError = error;
+        CoreLog.w('斗鱼线路 $item 取流失败');
       }
     }
-    return LivePlayUrl(urls: urls);
+    if (streams.isEmpty) throw lastError ?? CoreError('斗鱼没有可用的播放线路');
+    return DouyuPlayUrl(streams);
   }
 
   Future<String> getPlayUrl(
       String roomId, String args, int rate, String cdn) async {
-    args += "&cdn=$cdn&rate=$rate";
-    var result = await HttpClient.instance.postJson(
-      "https://www.douyu.com/lapi/live/getH5Play/$roomId",
-      data: args,
-      header: {
-        'referer': 'https://www.douyu.com/$roomId',
-        'user-agent':
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36 Edg/114.0.1823.43"
-      },
-      formUrlEncoded: true,
-    );
-
-    return "${result["data"]["rtmp_url"]}/${HtmlUnescape().convert(result["data"]["rtmp_live"].toString())}";
+    final client = _playback;
+    final result = await client.fetch(
+        roomId: roomId, rate: rate, cdn: cdn, cookie: cookie);
+    return client.stream(result, rate, cdn).url;
   }
 
   @override
@@ -192,9 +196,10 @@ class DouyuSite implements LiveSite {
   @override
   Future<LiveRoomDetail> getRoomDetail({required String roomId}) async {
     Map roomInfo = await _getRoomInfo(roomId);
+    final canonicalRoomId = roomInfo['room_id'].toString();
 
     Map h5RoomInfo = await HttpClient.instance.getJson(
-        "https://www.douyu.com/swf_api/h5room/$roomId",
+        "https://www.douyu.com/swf_api/h5room/$canonicalRoomId",
         queryParameters: {},
         header: {
           'referer': 'https://www.douyu.com/$roomId',
@@ -202,16 +207,6 @@ class DouyuSite implements LiveSite {
               'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36 Edg/114.0.1823.43',
         });
     String? showTime = h5RoomInfo["data"]?["show_time"]?.toString();
-
-    var jsEncResult = await HttpClient.instance.getText(
-        "https://www.douyu.com/swf_api/homeH5Enc?rids=$roomId",
-        queryParameters: {},
-        header: {
-          'referer': 'https://www.douyu.com/$roomId',
-          'user-agent':
-              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36 Edg/114.0.1823.43"
-        });
-    var crptext = json.decode(jsEncResult)["data"]["room$roomId"].toString();
 
     if (showTime != null && showTime.isNotEmpty) {
       try {
@@ -242,7 +237,6 @@ class DouyuSite implements LiveSite {
       notice: "",
       status: roomInfo["show_status"] == 1 && roomInfo["videoLoop"] != 1,
       danmakuData: roomInfo["room_id"].toString(),
-      data: await getDouyuSign(crptext, roomInfo["room_id"].toString()),
       url: "https://www.douyu.com/$roomId",
       isRecord: roomInfo["videoLoop"] == 1,
       showTime: showTime,
@@ -286,20 +280,39 @@ class DouyuSite implements LiveSite {
   }
 
   Future<Map> _getRoomInfo(String roomId) async {
-    var result = await HttpClient.instance.getJson(
-        "https://www.douyu.com/betard/$roomId",
-        queryParameters: {},
-        header: {
-          'referer': 'https://www.douyu.com/$roomId',
-          'user-agent':
-              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36 Edg/114.0.1823.43',
-        });
-    Map roomInfo;
-    if (result is String) {
-      roomInfo = json.decode(result)["room"];
-    } else {
-      roomInfo = result["room"];
+    if (!RegExp(r'^\d+$').hasMatch(roomId)) throw CoreError('斗鱼房间号无效');
+    Future<dynamic> fetch(String id) =>
+        HttpClient.instance.getJson("https://www.douyu.com/betard/$id",
+            queryParameters: {},
+            header: {
+              'referer': 'https://www.douyu.com/$roomId',
+              'user-agent':
+                  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36 Edg/114.0.1823.43',
+            });
+    Map? readRoom(dynamic result) {
+      if (result is String) {
+        try {
+          result = json.decode(result);
+        } on FormatException {
+          return null;
+        }
+      }
+      final room = result is Map ? result['room'] : null;
+      return room is Map && RegExp(r'^[1-9]\d*$').hasMatch('${room['room_id']}')
+          ? room
+          : null;
     }
+
+    // A short numeric ID can be a real room (74751). Preserve the original
+    // metadata path; only resolve aliases when it returns no valid room.
+    var roomInfo = readRoom(await fetch(roomId));
+    if (roomInfo != null) return roomInfo;
+    final page =
+        await HttpClient.instance.getText('https://www.douyu.com/$roomId');
+    final match = RegExp(r'data-room-id="(\d+)"').firstMatch(page);
+    if (match == null) throw CoreError('无法解析斗鱼真实房间号');
+    roomInfo = readRoom(await fetch(match.group(1)!));
+    if (roomInfo == null) throw CoreError('无法读取斗鱼房间信息');
     return roomInfo;
   }
 

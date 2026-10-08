@@ -1,7 +1,6 @@
 import 'package:simple_live_core/simple_live_core.dart';
 import 'package:simple_live_tv_app/app/app_focus_node.dart';
 import 'package:simple_live_tv_app/app/sign/douyin.dart';
-import 'package:simple_live_tv_app/app/sign/douyu.dart';
 
 class Sites {
   static final Map<String, Site> allSites = {
@@ -16,7 +15,7 @@ class Sites {
       id: "douyu",
       logo: "assets/images/douyu.png",
       name: "斗鱼直播",
-      liveSite: DouyuSite()..setDouyuSignFunction(DouyuSign.getSign),
+      liveSite: DouyuSite(),
       index: 1,
     ),
     "huya": Site(

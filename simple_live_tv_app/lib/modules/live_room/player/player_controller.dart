@@ -227,7 +227,7 @@ class PlayerController extends BaseController
 
   void initStream() {
     _errorSubscription = player.stream.error.listen((event) {
-      Log.d("播放器错误：$event");
+      Log.d(formatPlayerLog("播放器错误：$event"));
       if (event.contains('no sound.')) {
         return;
       }
@@ -241,7 +241,7 @@ class PlayerController extends BaseController
       }
     });
     _logSubscription = player.stream.log.listen((event) {
-      Log.d("播放器日志：$event");
+      Log.d(formatPlayerLog("播放器日志：$event"));
     });
     _widthSubscription = player.stream.width.listen((event) {
       Log.w(
@@ -268,6 +268,7 @@ class PlayerController extends BaseController
   }
 
   void mediaEnd() {}
+  String formatPlayerLog(String message) => message;
 
   void mediaError(String error) {}
 

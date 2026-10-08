@@ -17,6 +17,8 @@ import 'package:simple_live_tv_app/models/db/history.dart';
 import 'package:simple_live_tv_app/modules/live_room/player/player_controller.dart';
 import 'package:simple_live_tv_app/services/db_service.dart';
 import 'package:simple_live_tv_app/services/follow_user_service.dart';
+import 'package:simple_live_tv_app/services/douyu_account_service.dart';
+import 'douyu_playback_recovery.dart';
 
 class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   final Site pSite;
@@ -52,6 +54,19 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   RxList<String> playUrls = RxList<String>();
 
   Map<String, String>? playHeaders;
+  List<DouyuStream> _douyuStreams = [];
+  final _douyuRecovery = DouyuPlaybackRecovery();
+  Worker? _douyuAccountWorker;
+  StreamSubscription<Duration>? _douyuPositionSubscription;
+  int _playRequest = 0;
+  int _roomLoad = 0;
+  int _qualityRequest = 0;
+  bool _switchingRoom = false;
+  bool _roomClosed = false;
+  bool _douyuReplacing = false;
+  bool _douyuOpening = false;
+  bool _douyuOpenFailed = false;
+  int _douyuTerminalTicket = -1;
 
   /// 当前线路
   var currentLineIndex = -1;
@@ -85,6 +100,35 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     loadData();
 
     super.onInit();
+    if (Get.isRegistered<DouyuAccountService>()) {
+      _douyuAccountWorker =
+          ever(DouyuAccountService.instance.revision, (_) async {
+        if (site.id != 'douyu' || _roomClosed) return;
+        final ticket = ++_playRequest;
+        ++_qualityRequest;
+        _douyuRecovery.invalidate();
+        _douyuReplacing = true;
+        playUrls.clear();
+        _douyuStreams.clear();
+        await player.stop();
+        if (ticket != _playRequest || _roomClosed || site.id != 'douyu') return;
+        if (!_roomClosed && currentQuality >= 0 && detail.value != null) {
+          await getPlayUrl();
+        } else if (detail.value != null) {
+          getPlayQualites();
+        } else {
+          _douyuReplacing = false;
+        }
+      });
+    }
+    _douyuPositionSubscription = player.stream.position.listen((position) {
+      if (site.id == 'douyu') {
+        _douyuRecovery.observeProgress(position,
+            playing: player.state.playing,
+            buffering: player.state.buffering,
+            now: DateTime.now());
+      }
+    });
   }
 
   void refreshRoom() {
@@ -147,10 +191,19 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
 
   /// 加载直播间信息
   void loadData() async {
+    final ticket = ++_roomLoad;
+    ++_playRequest;
+    ++_qualityRequest;
+    _douyuRecovery.invalidate();
+    final snapshotSite = site;
+    final snapshotRoom = roomId;
     try {
       SmartDialog.showLoading(msg: "");
       pageLoadding.value = true;
-      detail.value = await site.liveSite.getRoomDetail(roomId: roomId);
+      final result =
+          await snapshotSite.liveSite.getRoomDetail(roomId: snapshotRoom);
+      if (_roomClosed || ticket != _roomLoad) return;
+      detail.value = result;
 
       addHistory();
       online.value = detail.value!.online;
@@ -165,20 +218,32 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
       initDanmau();
       liveDanmaku.start(detail.value?.danmakuData);
     } catch (e) {
-      SmartDialog.showToast(e.toString());
+      if (!_roomClosed && ticket == _roomLoad) {
+        SmartDialog.showToast(e.toString());
+      }
     } finally {
-      SmartDialog.dismiss(status: SmartStatus.loading);
-      pageLoadding.value = false;
+      if (ticket == _roomLoad && !_roomClosed) {
+        SmartDialog.dismiss(status: SmartStatus.loading);
+        pageLoadding.value = false;
+      }
     }
   }
 
   /// 初始化播放器
   void getPlayQualites() async {
+    if (_roomClosed || detail.value == null) return;
+    final ticket = ++_qualityRequest;
+    final snapshotSite = site;
+    final snapshotDetail = detail.value!;
     qualites.clear();
     currentQuality = -1;
     try {
       var playQualites =
-          await site.liveSite.getPlayQualites(detail: detail.value!);
+          await snapshotSite.liveSite.getPlayQualites(detail: snapshotDetail);
+      if (_roomClosed ||
+          ticket != _qualityRequest ||
+          snapshotDetail != detail.value ||
+          snapshotSite != site) return;
 
       if (playQualites.isEmpty) {
         SmartDialog.showToast("无法读取播放清晰度");
@@ -200,54 +265,164 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
 
       getPlayUrl();
     } catch (e) {
-      Log.logPrint(e);
+      if (_roomClosed || ticket != _qualityRequest) return;
+      _douyuReplacing = false;
+      if (site.id != 'douyu') Log.logPrint(e);
       SmartDialog.showToast("无法读取播放清晰度");
     }
   }
 
-  void getPlayUrl() async {
+  Future<void> getPlayUrl({int line = 0}) async {
+    if (_roomClosed ||
+        detail.value == null ||
+        currentQuality < 0 ||
+        currentQuality >= qualites.length) return;
+    final ticket = ++_playRequest;
+    final roomDetail = detail.value!;
+    final quality = qualites[currentQuality];
+    _douyuRecovery.invalidate();
+    _douyuReplacing = site.id == 'douyu';
     playUrls.clear();
     currentQualityInfo.value = qualites[currentQuality].quality;
     currentLineInfo.value = "";
     currentLineIndex = -1;
-    var playUrl = await site.liveSite
-        .getPlayUrls(detail: detail.value!, quality: qualites[currentQuality]);
-    if (playUrl.urls.isEmpty) {
-      SmartDialog.showToast("无法读取播放地址");
-      return;
+    try {
+      var playUrl =
+          await site.liveSite.getPlayUrls(detail: roomDetail, quality: quality);
+      if (_roomClosed || ticket != _playRequest) return;
+      if (playUrl.urls.isEmpty) {
+        SmartDialog.showToast("无法读取播放地址");
+        return;
+      }
+      playUrls.value = playUrl.urls;
+      playHeaders = playUrl.headers;
+      _douyuStreams = playUrl is DouyuPlayUrl ? playUrl.streams : [];
+      currentLineIndex = line % playUrl.urls.length;
+      _showDouyuQuality();
+      currentLineInfo.value = "线路${currentLineIndex + 1}";
+      //重置错误次数
+      mediaErrorRetryCount = 0;
+      await setPlayer();
+    } catch (_) {
+      if (!_roomClosed && ticket == _playRequest) {
+        errorMsg.value =
+            site.id == 'douyu' ? '斗鱼取流失败，请刷新或在设置中重新登录' : '无法读取播放地址';
+        SmartDialog.showToast(errorMsg.value);
+      }
+    } finally {
+      if (ticket == _playRequest) _douyuReplacing = false;
     }
-    playUrls.value = playUrl.urls;
-    playHeaders = playUrl.headers;
-    currentLineIndex = 0;
-    currentLineInfo.value = "线路${currentLineIndex + 1}";
-    //重置错误次数
-    mediaErrorRetryCount = 0;
-    setPlayer();
+  }
+
+  void _showDouyuQuality() {
+    if (_douyuStreams.isEmpty ||
+        currentLineIndex < 0 ||
+        currentLineIndex >= _douyuStreams.length) return;
+    final stream = _douyuStreams[currentLineIndex];
+    currentQualityInfo.value = stream.actualQuality;
+    if (stream.downgraded) {
+      SmartDialog.showToast('斗鱼实际返回${stream.actualQuality}，可在设置→账号中扫码登录或重新登录');
+    }
   }
 
   void changePlayLine(int index) {
+    if (site.id == 'douyu') {
+      getPlayUrl(line: index);
+      return;
+    }
     currentLineIndex = index;
     //重置错误次数
     mediaErrorRetryCount = 0;
     setPlayer();
   }
 
-  void setPlayer() async {
+  Future<void> setPlayer() async {
+    if (_roomClosed ||
+        currentLineIndex < 0 ||
+        currentLineIndex >= playUrls.length) return;
     currentLineInfo.value = "线路${currentLineIndex + 1}";
     errorMsg.value = "";
 
-    player.open(
+    await player.open(
       Media(
         playUrls[currentLineIndex],
         httpHeaders: playHeaders,
       ),
     );
 
-    Log.d("播放链接\r\n：${playUrls[currentLineIndex]}");
+    if (site.id == 'douyu') {
+      Log.d('斗鱼播放：${currentLineInfo.value}，${currentQualityInfo.value}');
+    } else if (currentLineIndex >= 0 && currentLineIndex < playUrls.length) {
+      Log.d("播放链接\r\n：${playUrls[currentLineIndex]}");
+    }
+  }
+
+  @override
+  String formatPlayerLog(String message) => site.id == 'douyu'
+      ? message.replaceAll(RegExp(r'https?://\S+|/live/\S+'), '<斗鱼授权地址>')
+      : message;
+
+  Future<void> _recoverDouyu() async {
+    if (_douyuTerminalTicket == _playRequest) return;
+    if (_roomClosed ||
+        _douyuReplacing ||
+        detail.value == null ||
+        currentQuality < 0 ||
+        currentQuality >= qualites.length) return;
+    if (_douyuRecovery.running) {
+      if (_douyuOpening) _douyuOpenFailed = true;
+      return;
+    }
+    final roomDetail = detail.value!;
+    final quality = qualites[currentQuality];
+    final previousLine = currentLineIndex < 0 ? 0 : currentLineIndex;
+    final recoveryTicket = _playRequest;
+    final result = await _douyuRecovery.recover((attempt, isCurrent) async {
+      final urls =
+          await site.liveSite.getPlayUrls(detail: roomDetail, quality: quality);
+      if (!isCurrent() || urls.urls.isEmpty) return false;
+      playUrls.value = urls.urls;
+      playHeaders = urls.headers;
+      _douyuStreams = urls is DouyuPlayUrl ? urls.streams : [];
+      currentLineIndex = (previousLine + (attempt - 1)) % urls.urls.length;
+      _showDouyuQuality();
+      _douyuOpening = true;
+      _douyuOpenFailed = false;
+      try {
+        await setPlayer();
+        await Future<void>.delayed(const Duration(milliseconds: 250));
+        return isCurrent() && !_douyuOpenFailed;
+      } finally {
+        _douyuOpening = false;
+      }
+    });
+    if (result == DouyuRecoveryResult.exhausted &&
+        !_roomClosed &&
+        recoveryTicket == _playRequest) {
+      final ticket = _playRequest;
+      _douyuTerminalTicket = ticket;
+      try {
+        final latest =
+            await site.liveSite.getRoomDetail(roomId: roomDetail.roomId);
+        if (ticket != _playRequest || _roomClosed) return;
+        if (!latest.status && !latest.isRecord) {
+          liveStatus.value = false;
+          return;
+        }
+      } catch (_) {}
+      if (ticket == _playRequest && !_roomClosed) {
+        errorMsg.value = '斗鱼播放中断，请刷新或重新登录';
+      }
+    }
   }
 
   @override
   void mediaEnd() async {
+    if (_roomClosed || _switchingRoom) return;
+    if (site.id == 'douyu') {
+      await _recoverDouyu();
+      return;
+    }
     if (mediaErrorRetryCount < 2) {
       Log.d("播放结束，尝试第${mediaErrorRetryCount + 1}次刷新");
       if (mediaErrorRetryCount == 1) {
@@ -274,6 +449,11 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   int mediaErrorRetryCount = 0;
   @override
   void mediaError(String error) async {
+    if (_roomClosed || _switchingRoom) return;
+    if (site.id == 'douyu') {
+      await _recoverDouyu();
+      return;
+    }
     if (mediaErrorRetryCount < 2) {
       Log.d("播放失败，尝试第${mediaErrorRetryCount + 1}次刷新");
       if (mediaErrorRetryCount == 1) {
@@ -356,9 +536,17 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   }
 
   void resetRoom(Site site, String roomId) async {
-    if (this.site == site && this.roomId == roomId) {
-      return;
-    }
+    if (this.site == site && this.roomId == roomId) return;
+    final ticket = ++_roomLoad;
+    ++_playRequest;
+    ++_qualityRequest;
+    _switchingRoom = true;
+    _douyuRecovery.invalidate();
+    _douyuStreams.clear();
+    detail.value = null;
+    currentQuality = -1;
+    qualites.clear();
+    playUrls.clear();
 
     rxSite.value = site;
     rxRoomId.value = roomId;
@@ -373,6 +561,8 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
 
     // 停止播放
     await player.stop();
+    if (_roomClosed || ticket != _roomLoad) return;
+    _switchingRoom = false;
 
     // 刷新信息
     loadData();
@@ -443,6 +633,13 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
 
   @override
   void onClose() {
+    _roomClosed = true;
+    ++_roomLoad;
+    ++_qualityRequest;
+    ++_playRequest;
+    _douyuRecovery.close();
+    _douyuAccountWorker?.dispose();
+    _douyuPositionSubscription?.cancel();
     liveDanmaku.stop();
 
     danmakuController = null;
