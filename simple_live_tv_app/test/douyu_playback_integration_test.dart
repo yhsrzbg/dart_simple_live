@@ -49,7 +49,11 @@ void main() {
             cdn: 'test',
             requestedRate: 0,
             actualRate: rate,
-            actualQuality: rate == 0 ? '原画1080P60' : '蓝光4M')
+            actualQuality: rate < 0
+                ? '清晰度未确认'
+                : rate == 0
+                    ? '原画1080P60'
+                    : '蓝光4M')
       ]);
   ProbeRoom room(ProbeSite site) {
     final r = ProbeRoom(site);
@@ -71,6 +75,18 @@ void main() {
   Future<void> mount(WidgetTester tester) => tester.pumpWidget(GetMaterialApp(
       builder: FlutterSmartDialog.init(), home: const Scaffold()));
   tearDown(() => Get.reset());
+  testWidgets('TV plays unconfirmed quality while retaining the selected tier',
+      (tester) async {
+    await mount(tester);
+    final site = ProbeSite()..fetch = ((_) async => url('unknown', rate: -1));
+    final r = room(site);
+    await r.getPlayUrl();
+    expect(r.currentQualityInfo.value, '清晰度未确认');
+    expect(r.currentQuality, 0);
+    expect(r.opens, hasLength(1));
+    expect(r.errorMsg.value, isEmpty);
+    r.focusNode.dispose();
+  });
   testWidgets('TV shows actual downgrade and forwards playback headers',
       (tester) async {
     await mount(tester);

@@ -1,5 +1,4 @@
 import 'dart:convert';
-import 'dart:io';
 
 import 'package:crypto/crypto.dart';
 import 'package:dio/dio.dart';
@@ -7,8 +6,9 @@ import 'package:html_unescape/html_unescape.dart';
 import '../common/core_error.dart';
 import '../common/http_client.dart';
 import '../model/live_play_url.dart';
+import 'douyu_session.dart';
 
-/// Douyu's current web playback protocol, also used by AngelLive 2.0.21.
+/// Douyu web playback with the session fallback used by AngelLive 2.0.25.
 class DouyuPlaybackClient {
   DouyuPlaybackClient({Dio? dio, DateTime Function()? now})
       : _dio = dio ?? HttpClient.instance.dio,
@@ -16,7 +16,7 @@ class DouyuPlaybackClient {
 
   final Dio _dio;
   final DateTime Function() _now;
-  static const did = '10000000000000000000000000001501';
+  static const did = DouyuSession.guestDevice;
   static const userAgent =
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36 Edg/114.0.1823.43';
   static const playbackHeaders = {
@@ -24,16 +24,32 @@ class DouyuPlaybackClient {
     'Referer': 'https://www.douyu.com/',
   };
 
-  Map<String, dynamic> _payload(dynamic response, String operation) {
+  Map<String, dynamic> _payload(
+      Response<dynamic> response, String operation, bool authenticated) {
+    final status = response.statusCode ?? 0;
+    final loginRedirect = response.realUri.host == 'passport.douyu.com' ||
+        (response.headers.value('location') ?? '')
+            .startsWith('https://passport.douyu.com/member/login');
+    if (status != 200 || loginRedirect) {
+      if (authenticated && (status == 401 || status == 403 || loginRedirect)) {
+        throw _RetryAsGuest();
+      }
+      throw CoreError('斗鱼$operation失败（HTTP $status）');
+    }
     dynamic decoded;
     try {
-      decoded = response is String ? jsonDecode(response) : response;
+      decoded =
+          response.data is String ? jsonDecode(response.data) : response.data;
     } catch (_) {
       throw CoreError('斗鱼$operation响应无效');
     }
-    if (decoded is! Map || decoded['error'].toString() != '0') {
-      final code = decoded is Map ? decoded['error'] : 'invalid';
-      throw CoreError('斗鱼$operation失败（$code）');
+    final code = decoded is Map ? num.tryParse('${decoded['error']}') : null;
+    if (code == null || !code.isFinite || code != 0) {
+      if (authenticated && code != null && code.isFinite && code != 0) {
+        throw _RetryAsGuest();
+      }
+      throw CoreError(
+          '斗鱼$operation失败（${code != null && code.isFinite ? code : 'invalid'}）');
     }
     final data = decoded['data'];
     if (data is! Map) throw CoreError('斗鱼$operation数据无效');
@@ -47,11 +63,21 @@ class DouyuPlaybackClient {
     String cookie = '',
   }) async {
     if (!RegExp(r'^\d+$').hasMatch(roomId)) throw CoreError('斗鱼房间号无效');
-    // The official web client uses the device from the same login session.
-    final device = RegExp(r'(?:^|;\s*)dy_did=([a-fA-F0-9]{32})(?:;|$)')
-            .firstMatch(cookie)
-            ?.group(1) ??
-        did;
+    final session = DouyuSession(cookie);
+    final incomplete = session.hasCredential && session.playbackExpiry == null;
+    try {
+      return await _fetch(roomId, rate, cdn, incomplete ? '' : cookie);
+    } on _RetryAsGuest {
+      // Start a fresh guest signature transaction, retaining the saved Cookie.
+      return _fetch(roomId, rate, cdn, '');
+    }
+  }
+
+  Future<Map<String, dynamic>> _fetch(
+      String roomId, int rate, String cdn, String cookie) async {
+    final session = DouyuSession(cookie);
+    final authenticated = cookie.isNotEmpty;
+    final device = session.device;
     final headers = <String, String>{
       'User-Agent': userAgent,
       'Referer': 'https://www.douyu.com/',
@@ -60,9 +86,17 @@ class DouyuPlaybackClient {
     final encrypted = await _dio.get(
       'https://www.douyu.com/wgapi/livenc/liveweb/websec/getEncryption',
       queryParameters: {'did': device},
-      options: Options(headers: headers, extra: {'sensitive': true}),
+      options: Options(
+          headers: headers,
+          extra: {'sensitive': true},
+          followRedirects: false,
+          validateStatus: (_) => true),
     );
-    final data = _payload(encrypted.data, '签名参数获取');
+    final data = _payload(encrypted, '签名参数获取', authenticated);
+    final timestamp = DouyuSession.responseTime(encrypted, _now());
+    if (session.hasCredential && !session.canPlay(timestamp)) {
+      throw _RetryAsGuest();
+    }
     final numericCount = num.tryParse('${data['enc_time']}');
     if (numericCount == null ||
         !numericCount.isFinite ||
@@ -76,15 +110,6 @@ class DouyuPlaybackClient {
       if (data[field] is! String || (data[field] as String).isEmpty) {
         throw CoreError('斗鱼签名参数无效');
       }
-    }
-    var timestamp = _now().millisecondsSinceEpoch ~/ 1000;
-    try {
-      final date = encrypted.headers.value('date');
-      if (date != null) {
-        timestamp = HttpDate.parse(date).millisecondsSinceEpoch ~/ 1000;
-      }
-    } catch (_) {
-      // Same fallback as the plugin when the server Date is unavailable.
     }
     String hash(String value) => md5.convert(utf8.encode(value)).toString();
     var value = data['rand_str'] as String;
@@ -110,9 +135,11 @@ class DouyuPlaybackClient {
         contentType: Headers.formUrlEncodedContentType,
         headers: {...headers, 'Referer': 'https://www.douyu.com/$roomId'},
         extra: {'sensitive': true},
+        followRedirects: false,
+        validateStatus: (_) => true,
       ),
     );
-    return _payload(result.data, '取流');
+    return _payload(result, '取流', authenticated);
   }
 
   DouyuStream stream(Map<String, dynamic> data, int rate, String cdn) {
@@ -128,10 +155,12 @@ class DouyuPlaybackClient {
         !['http', 'https'].contains(uri.scheme)) {
       throw CoreError('斗鱼播放地址无效');
     }
-    final actualRate = int.tryParse('${data['rate']}');
-    if (actualRate == null) throw CoreError('斗鱼实际清晰度无效');
-    var actualQuality = '清晰度 $actualRate';
-    if (data['multirates'] is List) {
+    final text = '${data['rate']}'.trim();
+    final parsedRate =
+        RegExp(r'^\d+$').hasMatch(text) ? int.tryParse(text) ?? -1 : -1;
+    final actualRate = parsedRate <= 9007199254740991 ? parsedRate : -1;
+    var actualQuality = actualRate < 0 ? '清晰度未确认' : '清晰度 $actualRate';
+    if (actualRate >= 0 && data['multirates'] is List) {
       for (final item in data['multirates']) {
         if (item is Map && '${item['rate']}' == '$actualRate') {
           actualQuality = '${item['name']}';
@@ -154,7 +183,7 @@ class DouyuStream {
   final int requestedRate;
   final int actualRate;
   final String actualQuality;
-  bool get downgraded => requestedRate != actualRate;
+  bool get downgraded => actualRate >= 0 && requestedRate != actualRate;
   DouyuStream(
       {required this.url,
       required this.cdn,
@@ -162,6 +191,8 @@ class DouyuStream {
       required this.actualRate,
       required this.actualQuality});
 }
+
+class _RetryAsGuest implements Exception {}
 
 class DouyuPlayUrl extends LivePlayUrl {
   final List<DouyuStream> streams;

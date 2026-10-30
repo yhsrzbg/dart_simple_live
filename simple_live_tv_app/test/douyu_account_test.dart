@@ -51,7 +51,8 @@ void main() {
     expect(service.cookie, 'saved');
     expect(service.expired.value, isFalse);
   });
-  test('expired website session retains Cookie for independent playback JWT',
+  test(
+      'expired account or playback authorization retains Cookie for guest fallback',
       () async {
     final site = DouyuSite();
     final service = DouyuAccountService(

@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:cookie_jar/cookie_jar.dart';
 import 'package:dio/dio.dart';
 import '../common/core_error.dart';
+import 'douyu_session.dart';
 
 enum DouyuLoginState { waiting, scanned, expired, confirmed, failed }
 
@@ -158,7 +159,8 @@ class DouyuLoginClient {
           Uri.parse('https://www.douyu.com/lapi/live/getH5PlayV1/1'));
       final names = cookies.map((c) => c.name).toSet();
       if (!names.contains('acf_uid') ||
-          !names.any((n) => ['acf_auth', 'acf_dmjwt_token'].contains(n))) {
+          !names.any(
+              (n) => ['acf_auth', 'dy_auth', 'acf_jwt_token'].contains(n))) {
         throw CoreError('斗鱼登录回调缺少凭据');
       }
       final cookie = cookies.map((c) => '${c.name}=${c.value}').join('; ');
@@ -171,9 +173,8 @@ class DouyuLoginClient {
     }
   }
 
-  /// A redirect to passport is expired. Do not follow it and mistake its 200
-  /// login page response for a valid account.
-  /// This checks the website account session, not playback authorization.
+  /// Confirm both account identity and playback authorization. An unavailable
+  /// check throws so callers retain the existing account state and Cookie.
   static Future<bool> validateCookie(String cookie,
       {Dio? dio, CancelToken? cancelToken}) async {
     if (cookie.isEmpty) return false;
@@ -182,15 +183,48 @@ class DouyuLoginClient {
             connectTimeout: const Duration(seconds: 20),
             receiveTimeout: const Duration(seconds: 20)));
     try {
-      final response = await client.get('https://www.douyu.com/member/login',
+      final response = await client.get(
+          'https://www.douyu.com/lapi/member/api/getInfo',
+          queryParameters: {
+            'client_type': 0,
+            'd': DateTime.now().millisecondsSinceEpoch
+          },
           cancelToken: cancelToken,
           options: Options(
               followRedirects: false,
               responseType: ResponseType.plain,
-              validateStatus: (status) => status == 200 || status == 302,
-              headers: {'User-Agent': _headers['User-Agent'], 'Cookie': cookie},
-              extra: {'sensitive': true}));
-      return response.statusCode == 200;
+              validateStatus: (_) => true,
+              headers: {
+                'User-Agent': _headers['User-Agent'],
+                'Cookie': cookie,
+                'Referer': 'https://www.douyu.com/',
+                'Accept': 'application/json'
+              },
+              extra: {
+                'sensitive': true
+              }));
+      final status = response.statusCode ?? 0;
+      if (status == 401 ||
+          (status >= 300 && status < 400) ||
+          response.realUri.host == 'passport.douyu.com') return false;
+      if (status != 200) throw CoreError('暂时无法确认斗鱼登录状态，请稍后重试');
+      dynamic obj;
+      try {
+        obj =
+            response.data is String ? jsonDecode(response.data) : response.data;
+      } catch (_) {
+        throw CoreError('斗鱼账号校验未返回有效 JSON，请稍后重试');
+      }
+      if (obj is Map && '${obj['error']}' == '1') return false;
+      final account = obj is Map ? obj['msg'] : null;
+      if (obj is! Map ||
+          '${obj['error']}' != '0' ||
+          account is! Map ||
+          !RegExp(r'^[1-9]\d*$').hasMatch('${account['uid']}')) {
+        throw CoreError('斗鱼账号校验未确认用户身份，请稍后重试');
+      }
+      return DouyuSession(cookie)
+          .canPlay(DouyuSession.responseTime(response, DateTime.now()));
     } finally {
       if (dio == null) client.close();
     }

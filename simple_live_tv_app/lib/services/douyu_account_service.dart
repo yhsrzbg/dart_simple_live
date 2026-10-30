@@ -82,8 +82,8 @@ class DouyuAccountService extends GetxService {
     try {
       final valid = await _validateCookie(snapshot);
       if (ticket == _mutation && snapshot == cookie) expired.value = !valid;
-      // Website session and playback JWT can expire independently. Retain the
-      // full Cookie until the user replaces it or explicitly logs out.
+      // An expired account or playback JWT must not erase the saved Cookie.
+      // Playback can fall back to guest mode until the user logs in again.
     } catch (_) {
       // A network failure is not evidence of expired credentials.
     }
