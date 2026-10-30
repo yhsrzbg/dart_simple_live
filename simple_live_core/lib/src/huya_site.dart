@@ -1,13 +1,12 @@
 import 'dart:convert';
 import 'dart:math';
+import 'common/core_error.dart';
 
 import 'package:simple_live_core/simple_live_core.dart';
 import 'package:simple_live_core/src/common/http_client.dart';
 import 'package:crypto/crypto.dart';
 import 'package:simple_live_core/src/model/tars/get_cdn_token_ex_req.dart';
 import 'package:simple_live_core/src/model/tars/get_cdn_token_ex_resp.dart';
-import 'package:simple_live_core/src/model/tars/get_cdn_token_req.dart';
-import 'package:simple_live_core/src/model/tars/get_cdn_token_resp.dart';
 import 'package:simple_live_core/src/model/tars/huya_user_id.dart';
 import 'package:tars_dart/tars/net/base_tars_http.dart';
 
@@ -19,14 +18,14 @@ class HuyaSite implements LiveSite {
   static const String HYSDK_UA =
       "HYSDK(Windows, 30000002)_APP(pc_exe&7060000&official)_SDK(trans&2.32.3.5646)";
 
-  static Map<String, String> requestHeaders =  {
-      'Origin': baseUrl,
-      'Referer': baseUrl,
-      'User-Agent': HYSDK_UA,
+  static Map<String, String> requestHeaders = {
+    'Origin': baseUrl,
+    'Referer': baseUrl,
+    'User-Agent': HYSDK_UA,
   };
 
-  final BaseTarsHttp tupClient =
-  BaseTarsHttp("http://wup.huya.com", "liveui", headers: requestHeaders);
+  final BaseTarsHttp tupClient = BaseTarsHttp("http://wup.huya.com", "liveui",
+      headers: requestHeaders, timeOut: 20000);
 
   String? playUserAgent;
   @override
@@ -204,117 +203,144 @@ class HuyaSite implements LiveSite {
     } catch (e) {
       CoreLog.error(e);
     }
-    return playUserAgent ??
-        HYSDK_UA;
+    return playUserAgent ?? HYSDK_UA;
   }
 
   @override
   Future<LivePlayUrl> getPlayUrls(
       {required LiveRoomDetail detail,
       required LivePlayQuality quality}) async {
-    var ls = <String>[];
-    for (var element in quality.data["urls"]) {
-      var line = element as HuyaLineModel;
-      var url = await getPlayUrl(line, quality.data["bitRate"]);
-      ls.add(url);
+    final lines = List<HuyaLineModel>.from(quality.data['urls']);
+    final resolved = List<_HuyaRoute?>.filled(lines.length, null);
+    var next = 0;
+    Future<void> worker() async {
+      while (next < lines.length) {
+        final index = next++;
+        try {
+          resolved[index] =
+              await _resolveLine(lines[index], quality.data['bitRate']);
+        } catch (_) {
+          CoreLog.w('虎牙线路 ${lines[index].cdnType} 取流失败');
+        }
+      }
     }
-    // 最新UA需要额外验证，此方法暂时弃用
-    // var ua = await getHuYaUA();
+
+    await Future.wait(List.generate(min(3, lines.length), (_) => worker()));
+    final available = resolved.whereType<_HuyaRoute>().toList();
+    if (available.isEmpty) throw CoreError('虎牙没有可用播放线路，请刷新后重试');
     return LivePlayUrl(
-      urls: ls,
-      headers: {"user-agent": HYSDK_UA},
-    );
+        urls: available.map((r) => r.url).toList(),
+        headers: available.first.headers,
+        urlHeaders: available.map((r) => r.headers).toList());
   }
 
-  Future<String> getPlayUrl(HuyaLineModel line, int bitRate) async {
-    var antiCode = await getCndTokenInfoEx(line.streamName);
-    antiCode = buildAntiCode(line.streamName, line.presenterUid, antiCode);
-    var url =
-        '${line.line}/${line.streamName}.flv?${antiCode}&codec=264';
-    if (bitRate > 0) {
-      url += "&ratio=$bitRate";
+  static const mobilePlaybackUserAgent =
+      'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1';
+  static const _platforms = {
+    'huya_pc_exe': 0,
+    'huya_adr': 2,
+    'huya_ios': 3,
+    'tv_huya_nftv': 10,
+    'huya_webh5': 100,
+    'huya_live': 100,
+    'tars_mp': 102,
+    'tars_mobile': 103,
+    'huya_liveshareh5': 104
+  };
+
+  int _platform(Map<String, String> fields) =>
+      int.tryParse(fields['t'] ?? '') ?? _platforms[fields['ctype']] ?? 100;
+
+  Future<_HuyaRoute> _resolveLine(HuyaLineModel line, int bitRate) async {
+    String resolve(String token) {
+      final antiCode = buildAntiCode(line.streamName, line.presenterUid, token);
+      return '${line.line}/${line.streamName}.flv?$antiCode&codec=264${bitRate > 0 ? '&ratio=$bitRate' : ''}';
     }
-    return url;
+
+    String token;
+    String url;
+    try {
+      token = await getCndTokenInfoEx(line.streamName, flvUrl: line.line);
+      if (token.isEmpty) throw CoreError('虎牙签名为空');
+      url = resolve(token);
+    } catch (_) {
+      token = line.flvAntiCode;
+      if (token.isEmpty || token == 'null') throw CoreError('虎牙备用签名不可用');
+      url = resolve(token);
+    }
+    final fields = Uri.splitQueryString(token);
+    final platform = _platform(fields);
+    final mobile = platform != 0 && platform != 10;
+    final uri = Uri.tryParse(url);
+    if (uri == null ||
+        !uri.hasAuthority ||
+        !['http', 'https'].contains(uri.scheme)) {
+      throw CoreError('虎牙播放地址无效');
+    }
+    return _HuyaRoute(
+        url, {'user-agent': mobile ? mobilePlaybackUserAgent : HYSDK_UA});
   }
 
-  // 构造 anticode, python转写
-  /// [stream] streamname [presenterUid] 用户id [antiCode] 页面anti
-  ///
-  /// return ture anticode
-  String buildAntiCode(String stream, int presenterUid, String antiCode) {
+  Future<String> getPlayUrl(HuyaLineModel line, int bitRate) async =>
+      (await _resolveLine(line, bitRate)).url;
 
-    var mapAnti = Uri(query: antiCode).queryParametersAll;
-    if (!mapAnti.containsKey("fm")) {
+  String buildAntiCode(String stream, int presenterUid, String antiCode) {
+    final fields = Uri.splitQueryString(antiCode);
+    if (!fields.containsKey('fm')) {
+      if ((fields['wsSecret'] ?? '').isEmpty ||
+          (fields['wsTime'] ?? '').isEmpty) {
+        throw CoreError('虎牙签名参数不完整');
+      }
       return antiCode;
     }
-
-    var ctype = mapAnti["ctype"]?.first ?? "huya_pc_exe";
-    var platformId = int.tryParse(mapAnti["t"]?.first ?? "0");
-
-    bool isWap = platformId == 103;
-    var clacStartTime = DateTime.now().millisecondsSinceEpoch;
-
-    CoreLog.i(
-        "using $presenterUid | ctype-{$ctype} | platformId - {$platformId} | isWap - {$isWap} | $clacStartTime");
-
-    var seqId = presenterUid + clacStartTime;
-    final secretHash = md5
-        .convert(utf8.encode('$seqId|$ctype|$platformId'))
+    final ctype = fields['ctype'] ?? 'huya_pc_exe';
+    final platform = _platform({...fields, 'ctype': ctype});
+    final timestamp = DateTime.now().millisecondsSinceEpoch;
+    final uid = presenterUid > 0
+        ? presenterUid
+        : 1400000000000 + Random().nextInt(10000000);
+    final seqId = uid + timestamp;
+    final secretHash =
+        md5.convert(utf8.encode('$seqId|$ctype|$platform')).toString();
+    final convertUid = rotl64(uid);
+    final calcUid = platform == 103 ? uid : convertUid;
+    final fm = fields['fm']!;
+    final prefix =
+        utf8.decode(base64.decode(base64.normalize(fm))).split('_').first;
+    if (prefix.isEmpty) throw CoreError('虎牙签名前缀无效');
+    final nowSeconds = timestamp ~/ 1000;
+    var expiry = int.tryParse(fields['wsTime'] ?? '', radix: 16) ?? 0;
+    if (expiry - nowSeconds < 20 * 60) expiry = nowSeconds + 24 * 60 * 60;
+    final wsTime = expiry.toRadixString(16);
+    final secret = md5
+        .convert(
+            utf8.encode('${prefix}_${calcUid}_${stream}_${secretHash}_$wsTime'))
         .toString();
-
-    final convertUid = rotl64(presenterUid);
-    final calcUid = isWap ? presenterUid : convertUid;
-    final fm = Uri.decodeComponent(mapAnti['fm']!.first);
-    final secretPrefix = utf8
-        .decode(base64.decode(fm))
-        .split('_')
-        .first;
-    var wsTime = mapAnti['wsTime']!.first;
-    final secretStr =
-        '${secretPrefix}_${calcUid}_${stream}_${secretHash}_$wsTime';
-
-    final wsSecret =
-    md5.convert(utf8.encode(secretStr)).toString();
-
-    final rnd = Random();
-    final ct =
-    ((int.parse(wsTime, radix: 16) + rnd.nextDouble()) * 1000).toInt();
-    final uuid =
-    (((ct % 1e10) + rnd.nextDouble()) * 1e3 % 0xffffffff)
-        .toInt()
-        .toString();
-    final Map<String, dynamic> antiCodeRes = {
-      'wsSecret': wsSecret,
+    final result = <String, String>{
+      'wsSecret': secret,
       'wsTime': wsTime,
-      'seqid': seqId,
+      'seqid': '$seqId',
       'ctype': ctype,
       'ver': '1',
-      'fs': mapAnti['fs']!.first,
-      'fm': Uri.encodeComponent(mapAnti['fm']!.first),
-      't': platformId,
+      'fs': fields['fs'] ?? '',
+      'fm': fm,
+      't': '$platform',
+      if (platform == 103) 'uid': '$uid',
+      if (platform == 103) 'uuid': getUUid(),
+      if (platform != 103) 'u': '$convertUid',
     };
-    if (isWap) {
-      antiCodeRes.addAll({
-        'uid': presenterUid,
-        'uuid': uuid,
-      });
-    } else {
-      antiCodeRes['u'] = convertUid;
-    }
-
-    return antiCodeRes.entries
-        .map((e) => '${e.key}=${e.value}')
-        .join('&');
+    return Uri(queryParameters: result).query;
   }
 
   /// return sFlvToken
-  Future<String> getCndTokenInfoEx(String stream) async {
+  Future<String> getCndTokenInfoEx(String stream, {String flvUrl = ''}) async {
     var func = "getCdnTokenInfoEx";
     var tid = HuyaUserId();
     tid.sHuYaUA = "pc_exe&7060000&official";
     var tReq = GetCdnTokenExReq();
     tReq.tId = tid;
     tReq.sStreamName = stream;
+    tReq.sFlvUrl = flvUrl;
     var resp = await tupClient.tupRequest(func, tReq, GetCdnTokenExResp());
     return resp.sFlvToken;
   }
@@ -378,7 +404,9 @@ class HuyaSite implements LiveSite {
           hlsAntiCode: item["sHlsAntiCode"].toString(),
           streamName: item["sStreamName"].toString(),
           cdnType: item["sCdnType"].toString(),
-          presenterUid: roomInfo["topSid"]??0,
+          presenterUid: int.tryParse('${item["lPresenterUid"]}') ??
+              roomInfo["topSid"] ??
+              0,
         ));
       }
     }
@@ -558,8 +586,7 @@ class HuyaSite implements LiveSite {
 
   int rotl64(int t) {
     final low = t & 0xFFFFFFFF;
-    final rotatedLow =
-    ((low << 8) | (low >> 24)) & 0xFFFFFFFF;
+    final rotatedLow = ((low << 8) | (low >> 24)) & 0xFFFFFFFF;
     final high = t & ~0xFFFFFFFF;
     return high | rotatedLow;
   }
@@ -759,4 +786,10 @@ class HuyaBitRateModel {
       "bitRate": bitRate,
     });
   }
+}
+
+class _HuyaRoute {
+  final String url;
+  final Map<String, String> headers;
+  _HuyaRoute(this.url, this.headers);
 }

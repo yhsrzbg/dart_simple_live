@@ -1,111 +1,132 @@
 import 'dart:async';
-
 import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
 import 'package:get/get.dart';
-import 'package:simple_live_tv_app/app/log.dart';
-import 'package:simple_live_tv_app/requests/http_client.dart';
+import 'package:simple_live_core/simple_live_core.dart';
 import 'package:simple_live_tv_app/services/bilibili_account_service.dart';
 
-enum QRStatus {
-  loading,
-  unscanned,
-  scanned,
-  expired,
-  failed,
-}
+enum QRStatus { loading, unscanned, scanned, expired, failed }
 
 class BiliBiliQRLoginController extends GetxController {
+  BiliBiliQRLoginController(
+      {BiliBiliLoginClient Function()? createClient,
+      Future<void> Function(String)? saveCookie,
+      void Function()? finish})
+      : _createClient = createClient ?? BiliBiliLoginClient.new,
+        _saveCookie = saveCookie,
+        _finish = finish;
+  final BiliBiliLoginClient Function() _createClient;
+  final Future<void> Function(String)? _saveCookie;
+  final void Function()? _finish;
+  BiliBiliLoginClient? _client;
+  Timer? timer;
+  final qrcodeUrl = ''.obs;
+  final qrStatus = QRStatus.loading.obs;
+  int _generation = 0;
+  bool _closed = false;
+  bool _busy = false;
+  bool _finished = false;
+
   @override
   void onInit() {
-    loadQRCode();
     super.onInit();
+    loadQRCode();
   }
 
-  Timer? timer;
-
-  var qrcodeUrl = "".obs;
-  var qrcodeKey = "";
-
-  /// 二维码状态
-  /// - [0] 加载中
-  /// - [1] 未扫描
-  /// - [2] 已扫描，待确认
-  /// - [3] 二维码已经失效
-  /// - [4] 登录失败
-  Rx<QRStatus> qrStatus = QRStatus.loading.obs;
-
-  void loadQRCode() async {
+  Future<void> loadQRCode() async {
+    final generation = ++_generation;
+    timer?.cancel();
+    _client?.close();
+    _busy = false;
+    _finished = false;
+    qrStatus.value = QRStatus.loading;
+    qrcodeUrl.value = '';
+    final client = _client = _createClient();
     try {
-      qrStatus.value = QRStatus.loading;
-
-      var result = await HttpClient.instance.getJson(
-        "https://passport.bilibili.com/x/passport-login/web/qrcode/generate",
-      );
-      if (result["code"] != 0) {
-        throw result["message"];
-      }
-      qrcodeKey = result["data"]["qrcode_key"];
-      qrcodeUrl.value = result["data"]["url"];
+      final content = await client.create();
+      if (_closed || generation != _generation) return;
+      qrcodeUrl.value = content;
       qrStatus.value = QRStatus.unscanned;
       startPoll();
-    } catch (e) {
-      Log.logPrint(e);
-      SmartDialog.showToast(e.toString());
-      qrStatus.value = QRStatus.failed;
+    } catch (_) {
+      if (!_closed && generation == _generation) {
+        qrStatus.value = QRStatus.failed;
+      }
     }
   }
 
   void startPoll() {
-    timer = Timer.periodic(
-      const Duration(seconds: 3),
-      (timer) {
-        pollQRStatus();
-      },
-    );
+    timer?.cancel();
+    timer = Timer.periodic(const Duration(seconds: 3), (_) => pollQRStatus());
   }
 
-  void pollQRStatus() async {
+  Future<void> pollQRStatus() async {
+    if (_closed ||
+        _finished ||
+        _busy ||
+        _client == null ||
+        ![QRStatus.unscanned, QRStatus.scanned].contains(qrStatus.value)) {
+      return;
+    }
+    _busy = true;
+    final generation = _generation;
     try {
-      var response = await HttpClient.instance.get(
-        "https://passport.bilibili.com/x/passport-login/web/qrcode/poll",
-        queryParameters: {
-          "qrcode_key": qrcodeKey,
-        },
-      );
-      if (response.data["code"] != 0) {
-        throw response.data["message"];
+      final result = await _client!.poll();
+      if (_closed || generation != _generation) return;
+      switch (result.state) {
+        case BiliBiliLoginState.confirmed:
+          _finished = true;
+          timer?.cancel();
+          if (result.cookie?.isNotEmpty != true) {
+            throw StateError('missing cookie');
+          }
+          if (_saveCookie != null) {
+            await _saveCookie!(result.cookie!);
+          } else {
+            await BiliBiliAccountService.instance.setCookie(result.cookie!);
+            await BiliBiliAccountService.instance.loadUserInfo();
+          }
+          if (_closed || generation != _generation) return;
+          _client?.close();
+          if (_finish != null) {
+            _finish!();
+          } else {
+            Get.back();
+          }
+          break;
+        case BiliBiliLoginState.expired:
+          timer?.cancel();
+          qrStatus.value = QRStatus.expired;
+          _client?.close();
+          break;
+        case BiliBiliLoginState.failed:
+          timer?.cancel();
+          qrStatus.value = QRStatus.failed;
+          _client?.close();
+          break;
+        case BiliBiliLoginState.scanned:
+          qrStatus.value = QRStatus.scanned;
+          break;
+        case BiliBiliLoginState.waiting:
+          qrStatus.value = QRStatus.unscanned;
+          break;
       }
-      var data = response.data["data"];
-      var code = data["code"];
-      if (code == 0) {
-        var cookies = <String>[];
-        response.headers["set-cookie"]?.forEach((element) {
-          var cookie = element.split(";")[0];
-          cookies.add(cookie);
-        });
-        if (cookies.isNotEmpty) {
-          var cookieStr = cookies.join(";");
-          Log.i(cookieStr);
-          BiliBiliAccountService.instance.setCookie(cookieStr);
-          await BiliBiliAccountService.instance.loadUserInfo();
-          Get.back();
-        }
-      } else if (code == 86038) {
-        qrStatus.value = QRStatus.expired;
-        qrcodeKey = "";
+    } catch (_) {
+      if (!_closed && generation == _generation) {
         timer?.cancel();
-      } else if (code == 86090) {
-        qrStatus.value = QRStatus.scanned;
+        qrStatus.value = QRStatus.failed;
+        SmartDialog.showToast('哔哩哔哩登录失败，请重新获取二维码');
       }
-    } catch (e) {
-      Log.logPrint(e);
-      SmartDialog.showToast(e.toString());
+    } finally {
+      if (generation == _generation) _busy = false;
     }
   }
 
   @override
   void onClose() {
+    _closed = true;
+    ++_generation;
     timer?.cancel();
+    _client?.close();
     super.onClose();
   }
 }

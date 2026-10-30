@@ -4,6 +4,7 @@ export 'src/interface/live_site.dart';
 export 'src/interface/live_danmaku.dart';
 export 'src/huya_site.dart';
 export 'src/bilibili_site.dart';
+export 'src/bilibili/bilibili_login_client.dart';
 export 'src/douyu_site.dart';
 export 'src/douyu/douyu_login_client.dart';
 export 'src/douyin_site.dart';

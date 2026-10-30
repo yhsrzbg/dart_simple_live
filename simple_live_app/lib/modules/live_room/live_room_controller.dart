@@ -73,6 +73,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   RxList<String> playUrls = RxList<String>();
 
   Map<String, String>? playHeaders;
+  LivePlayUrl? _playResult;
 
   /// 当前线路
   var currentLineIndex = -1;
@@ -402,6 +403,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     }
     playUrls.value = playUrl.urls;
     playHeaders = playUrl.headers;
+    _playResult = playUrl;
     currentLineIndex = 0;
     currentLineInfo.value = "线路${currentLineIndex + 1}";
     //重置错误次数
@@ -421,6 +423,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     errorMsg.value = "";
 
     var playurl = playUrls[currentLineIndex];
+    playHeaders = _playResult?.headersFor(currentLineIndex) ?? playHeaders;
     if (AppSettingsController.instance.playerForceHttps.value) {
       playurl = playurl.replaceAll("http://", "https://");
     }

@@ -31,7 +31,9 @@ class BaseTarsHttp {
     this.headers = const {},
   }) {
     dio = Dio(BaseOptions(
-        connectTimeout: Duration(seconds: timeOut),
+        connectTimeout: Duration(milliseconds: timeOut),
+        receiveTimeout: Duration(milliseconds: timeOut),
+        sendTimeout: Duration(milliseconds: timeOut),
         baseUrl: baseUrl,
         responseType: ResponseType.bytes,
         headers: {
@@ -60,11 +62,12 @@ class BaseTarsHttp {
   Future<TupResponse<RSP>> tupRequestWithRspCode<REQ, RSP>(
       String methodName, REQ tReq, RSP tRsp) async {
     final data = buildRequest(methodName, tReq);
-    dio.options.headers[HttpHeaders.contentLengthHeader] = data.lengthInBytes;
     logger.d("send tupRequest, methodName:$methodName");
     final result = await dio.post<List<int>>(
       path,
       data: Stream.fromIterable(data.map((e) => [e])),
+      options: Options(
+          headers: {HttpHeaders.contentLengthHeader: data.lengthInBytes}),
     );
     final value = result.data;
     return tupResponseDecode(methodName, value!, tRsp);
@@ -74,11 +77,12 @@ class BaseTarsHttp {
   Future<TupResponse<void>> tupRequestWithRspCodeNoRsp<REQ>(
       String methodName, REQ tReq) async {
     final data = buildRequest(methodName, tReq);
-    dio.options.headers[HttpHeaders.contentLengthHeader] = data.lengthInBytes;
     logger.d("send tupRequestNoRsp, methodName:$methodName");
     final result = await dio.post<List<int>>(
       path,
       data: Stream.fromIterable(data.map((e) => [e])),
+      options: Options(
+          headers: {HttpHeaders.contentLengthHeader: data.lengthInBytes}),
     );
     final value = result.data;
     return tupEmptyResponseDecode(methodName, value!);

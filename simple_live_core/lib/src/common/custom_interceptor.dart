@@ -6,6 +6,11 @@ class CustomInterceptor extends Interceptor {
   @override
   void onRequest(RequestOptions options, RequestInterceptorHandler handler) {
     options.extra["ts"] = DateTime.now().millisecondsSinceEpoch;
+    if (options.headers.entries.any((entry) =>
+        ['cookie', 'authorization'].contains(entry.key.toLowerCase()) &&
+        '${entry.value}'.isNotEmpty)) {
+      options.extra['sensitive'] = true;
+    }
     if (options.extra['sensitive'] == true) {
       super.onRequest(options, handler);
       return;
@@ -28,7 +33,7 @@ Request Headers：${options.headers}''',
   @override
   void onError(DioException err, ErrorInterceptorHandler handler) {
     if (err.requestOptions.extra['sensitive'] == true) {
-      CoreLog.w('斗鱼授权请求失败：${err.requestOptions.uri.path} (${err.type})');
+      CoreLog.w('平台授权请求失败：${err.requestOptions.uri.path} (${err.type})');
       super.onError(err, handler);
       return;
     }

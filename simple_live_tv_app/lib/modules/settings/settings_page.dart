@@ -422,9 +422,13 @@ class SettingsPage extends GetView<SettingsController> {
             focusNode: controller.bilibiliFoucsNode,
             autofocus: controller.bilibiliFoucsNode.isFoucsed.value,
             title: "哔哩哔哩账号",
-            subtitle: BiliBiliAccountService.instance.logined.value
-                ? "已登录：${BiliBiliAccountService.instance.name.value}"
-                : "未登录，点击登录",
+            subtitle: BiliBiliAccountService.instance.expired.value
+                ? '登录已失效，请重新登录'
+                : BiliBiliAccountService.instance.riskControlled.value
+                    ? '暂时受到风控限制，可稍后重试或重新登录'
+                    : BiliBiliAccountService.instance.logined.value
+                        ? "已登录：${BiliBiliAccountService.instance.name.value}"
+                        : "未登录，点击登录",
             leading: Image.asset(
               "assets/images/bilibili.png",
               width: 64.w,
@@ -489,7 +493,7 @@ class SettingsPage extends GetView<SettingsController> {
           focusNode: controller.versionFocusNode,
           title: "版本",
           subtitle: "v${Utils.packageInfo.version}",
-          onTap: ()=>{},
+          onTap: () => {},
         ),
       ],
     );

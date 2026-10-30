@@ -7,9 +7,18 @@ class LivePlayUrl {
   /// 请求头
   final Map<String, String>? headers;
 
+  /// Per-route headers when the signature identity differs between CDNs.
+  final List<Map<String, String>>? urlHeaders;
+
+  Map<String, String>? headersFor(int index) =>
+      urlHeaders != null && index >= 0 && index < urlHeaders!.length
+          ? urlHeaders![index]
+          : headers;
+
   LivePlayUrl({
     required this.urls,
     this.headers,
+    this.urlHeaders,
   });
 
   @override

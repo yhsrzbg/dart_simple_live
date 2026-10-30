@@ -18,7 +18,8 @@ import 'package:simple_live_tv_app/modules/live_room/player/player_controller.da
 import 'package:simple_live_tv_app/services/db_service.dart';
 import 'package:simple_live_tv_app/services/follow_user_service.dart';
 import 'package:simple_live_tv_app/services/douyu_account_service.dart';
-import 'douyu_playback_recovery.dart';
+import 'playback_recovery.dart';
+import 'package:simple_live_tv_app/services/bilibili_account_service.dart';
 
 class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   final Site pSite;
@@ -54,19 +55,22 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   RxList<String> playUrls = RxList<String>();
 
   Map<String, String>? playHeaders;
+  LivePlayUrl? _playResult;
+  Worker? _biliAccountWorker;
+  bool get _freshPlayback => ['douyu', 'huya', 'bilibili'].contains(site.id);
   List<DouyuStream> _douyuStreams = [];
-  final _douyuRecovery = DouyuPlaybackRecovery();
+  final _playbackRecovery = PlaybackRecovery();
   Worker? _douyuAccountWorker;
-  StreamSubscription<Duration>? _douyuPositionSubscription;
+  StreamSubscription<Duration>? _playbackPositionSubscription;
   int _playRequest = 0;
   int _roomLoad = 0;
   int _qualityRequest = 0;
   bool _switchingRoom = false;
   bool _roomClosed = false;
-  bool _douyuReplacing = false;
-  bool _douyuOpening = false;
-  bool _douyuOpenFailed = false;
-  int _douyuTerminalTicket = -1;
+  bool _playbackReplacing = false;
+  bool _playbackOpening = false;
+  bool _playbackOpenFailed = false;
+  int _playbackTerminalTicket = -1;
 
   /// 当前线路
   var currentLineIndex = -1;
@@ -106,8 +110,8 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
         if (site.id != 'douyu' || _roomClosed) return;
         final ticket = ++_playRequest;
         ++_qualityRequest;
-        _douyuRecovery.invalidate();
-        _douyuReplacing = true;
+        _playbackRecovery.invalidate();
+        _playbackReplacing = true;
         playUrls.clear();
         _douyuStreams.clear();
         await player.stop();
@@ -117,13 +121,31 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
         } else if (detail.value != null) {
           getPlayQualites();
         } else {
-          _douyuReplacing = false;
+          _playbackReplacing = false;
         }
       });
     }
-    _douyuPositionSubscription = player.stream.position.listen((position) {
-      if (site.id == 'douyu') {
-        _douyuRecovery.observeProgress(position,
+    if (Get.isRegistered<BiliBiliAccountService>()) {
+      _biliAccountWorker =
+          ever(BiliBiliAccountService.instance.revision, (_) async {
+        if (site.id != 'bilibili' || _roomClosed) return;
+        final ticket = ++_playRequest;
+        ++_qualityRequest;
+        _playbackRecovery.invalidate();
+        _playbackReplacing = true;
+        playUrls.clear();
+        await player.stop();
+        if (_roomClosed || ticket != _playRequest || site.id != 'bilibili') {
+          return;
+        }
+        // The danmaku token, UID and Cookie belong to the old account too.
+        // Reload room metadata so both playback and danmaku use the new session.
+        refreshRoom();
+      });
+    }
+    _playbackPositionSubscription = player.stream.position.listen((position) {
+      if (_freshPlayback) {
+        _playbackRecovery.observeProgress(position,
             playing: player.state.playing,
             buffering: player.state.buffering,
             now: DateTime.now());
@@ -194,7 +216,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     final ticket = ++_roomLoad;
     ++_playRequest;
     ++_qualityRequest;
-    _douyuRecovery.invalidate();
+    _playbackRecovery.invalidate();
     final snapshotSite = site;
     final snapshotRoom = roomId;
     try {
@@ -266,7 +288,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
       getPlayUrl();
     } catch (e) {
       if (_roomClosed || ticket != _qualityRequest) return;
-      _douyuReplacing = false;
+      _playbackReplacing = false;
       if (site.id != 'douyu') Log.logPrint(e);
       SmartDialog.showToast("无法读取播放清晰度");
     }
@@ -280,8 +302,8 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     final ticket = ++_playRequest;
     final roomDetail = detail.value!;
     final quality = qualites[currentQuality];
-    _douyuRecovery.invalidate();
-    _douyuReplacing = site.id == 'douyu';
+    _playbackRecovery.invalidate();
+    _playbackReplacing = _freshPlayback;
     playUrls.clear();
     currentQualityInfo.value = qualites[currentQuality].quality;
     currentLineInfo.value = "";
@@ -296,9 +318,10 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
       }
       playUrls.value = playUrl.urls;
       playHeaders = playUrl.headers;
+      _playResult = playUrl;
       _douyuStreams = playUrl is DouyuPlayUrl ? playUrl.streams : [];
       currentLineIndex = line % playUrl.urls.length;
-      _showDouyuQuality();
+      _showPlaybackQuality();
       currentLineInfo.value = "线路${currentLineIndex + 1}";
       //重置错误次数
       mediaErrorRetryCount = 0;
@@ -310,11 +333,25 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
         SmartDialog.showToast(errorMsg.value);
       }
     } finally {
-      if (ticket == _playRequest) _douyuReplacing = false;
+      if (ticket == _playRequest) _playbackReplacing = false;
     }
   }
 
-  void _showDouyuQuality() {
+  void _showPlaybackQuality() {
+    if (currentLineIndex >= 0) {
+      playHeaders = _playResult?.headersFor(currentLineIndex) ?? playHeaders;
+    }
+    final result = _playResult;
+    if (result is BiliBiliPlayUrl &&
+        currentLineIndex >= 0 &&
+        currentLineIndex < result.streams.length) {
+      final stream = result.streams[currentLineIndex];
+      currentQualityInfo.value = stream.actualQuality;
+      if (stream.downgraded) {
+        SmartDialog.showToast('哔哩哔哩实际返回${stream.actualQuality}，可检查账号登录状态');
+      }
+      return;
+    }
     if (_douyuStreams.isEmpty ||
         currentLineIndex < 0 ||
         currentLineIndex >= _douyuStreams.length) return;
@@ -326,7 +363,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   }
 
   void changePlayLine(int index) {
-    if (site.id == 'douyu') {
+    if (_freshPlayback) {
       getPlayUrl(line: index);
       return;
     }
@@ -350,57 +387,59 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
       ),
     );
 
-    if (site.id == 'douyu') {
-      Log.d('斗鱼播放：${currentLineInfo.value}，${currentQualityInfo.value}');
+    if (_freshPlayback) {
+      Log.d(
+          '${site.name}播放：${currentLineInfo.value}，${currentQualityInfo.value}');
     } else if (currentLineIndex >= 0 && currentLineIndex < playUrls.length) {
       Log.d("播放链接\r\n：${playUrls[currentLineIndex]}");
     }
   }
 
   @override
-  String formatPlayerLog(String message) => site.id == 'douyu'
-      ? message.replaceAll(RegExp(r'https?://\S+|/live/\S+'), '<斗鱼授权地址>')
+  String formatPlayerLog(String message) => _freshPlayback
+      ? message.replaceAll(RegExp(r'https?://\S+|/\S*\?\S+'), '<平台授权地址>')
       : message;
 
-  Future<void> _recoverDouyu() async {
-    if (_douyuTerminalTicket == _playRequest) return;
+  Future<void> _recoverPlayback() async {
+    if (_playbackTerminalTicket == _playRequest) return;
     if (_roomClosed ||
-        _douyuReplacing ||
+        _playbackReplacing ||
         detail.value == null ||
         currentQuality < 0 ||
         currentQuality >= qualites.length) return;
-    if (_douyuRecovery.running) {
-      if (_douyuOpening) _douyuOpenFailed = true;
+    if (_playbackRecovery.running) {
+      if (_playbackOpening) _playbackOpenFailed = true;
       return;
     }
     final roomDetail = detail.value!;
     final quality = qualites[currentQuality];
     final previousLine = currentLineIndex < 0 ? 0 : currentLineIndex;
     final recoveryTicket = _playRequest;
-    final result = await _douyuRecovery.recover((attempt, isCurrent) async {
+    final result = await _playbackRecovery.recover((attempt, isCurrent) async {
       final urls =
           await site.liveSite.getPlayUrls(detail: roomDetail, quality: quality);
       if (!isCurrent() || urls.urls.isEmpty) return false;
       playUrls.value = urls.urls;
       playHeaders = urls.headers;
+      _playResult = urls;
       _douyuStreams = urls is DouyuPlayUrl ? urls.streams : [];
       currentLineIndex = (previousLine + (attempt - 1)) % urls.urls.length;
-      _showDouyuQuality();
-      _douyuOpening = true;
-      _douyuOpenFailed = false;
+      _showPlaybackQuality();
+      _playbackOpening = true;
+      _playbackOpenFailed = false;
       try {
         await setPlayer();
         await Future<void>.delayed(const Duration(milliseconds: 250));
-        return isCurrent() && !_douyuOpenFailed;
+        return isCurrent() && !_playbackOpenFailed;
       } finally {
-        _douyuOpening = false;
+        if (isCurrent()) _playbackOpening = false;
       }
     });
-    if (result == DouyuRecoveryResult.exhausted &&
+    if (result == PlaybackRecoveryResult.exhausted &&
         !_roomClosed &&
         recoveryTicket == _playRequest) {
       final ticket = _playRequest;
-      _douyuTerminalTicket = ticket;
+      _playbackTerminalTicket = ticket;
       try {
         final latest =
             await site.liveSite.getRoomDetail(roomId: roomDetail.roomId);
@@ -411,7 +450,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
         }
       } catch (_) {}
       if (ticket == _playRequest && !_roomClosed) {
-        errorMsg.value = '斗鱼播放中断，请刷新或重新登录';
+        errorMsg.value = '${site.name}播放中断，请刷新或重新登录';
       }
     }
   }
@@ -419,8 +458,8 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   @override
   void mediaEnd() async {
     if (_roomClosed || _switchingRoom) return;
-    if (site.id == 'douyu') {
-      await _recoverDouyu();
+    if (_freshPlayback) {
+      await _recoverPlayback();
       return;
     }
     if (mediaErrorRetryCount < 2) {
@@ -450,8 +489,8 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   @override
   void mediaError(String error) async {
     if (_roomClosed || _switchingRoom) return;
-    if (site.id == 'douyu') {
-      await _recoverDouyu();
+    if (_freshPlayback) {
+      await _recoverPlayback();
       return;
     }
     if (mediaErrorRetryCount < 2) {
@@ -541,7 +580,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     ++_playRequest;
     ++_qualityRequest;
     _switchingRoom = true;
-    _douyuRecovery.invalidate();
+    _playbackRecovery.invalidate();
     _douyuStreams.clear();
     detail.value = null;
     currentQuality = -1;
@@ -637,9 +676,10 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     ++_roomLoad;
     ++_qualityRequest;
     ++_playRequest;
-    _douyuRecovery.close();
+    _playbackRecovery.close();
     _douyuAccountWorker?.dispose();
-    _douyuPositionSubscription?.cancel();
+    _biliAccountWorker?.dispose();
+    _playbackPositionSubscription?.cancel();
     liveDanmaku.stop();
 
     danmakuController = null;

@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:crypto/crypto.dart';
+import 'common/core_error.dart';
 import 'package:simple_live_core/src/common/convert_helper.dart';
 import 'package:simple_live_core/src/common/http_client.dart';
 import 'package:simple_live_core/src/danmaku/bilibili_danmaku.dart';
@@ -23,7 +24,30 @@ class BiliBiliSite implements LiveSite {
   @override
   String name = "哔哩哔哩直播";
 
-  String cookie = "";
+  String _cookie = '';
+  String get cookie => _cookie;
+  set cookie(String value) {
+    if (value == _cookie) return;
+    _cookie = value;
+    buvid3 = '';
+    buvid4 = '';
+    accessId = '';
+    _deviceRequest = null;
+  }
+
+  Future<Map>? _deviceRequest;
+  static Map<String, String> cookieFields(String value) {
+    final fields = <String, String>{};
+    for (final part in value.split(';')) {
+      final index = part.indexOf('=');
+      if (index > 0) {
+        fields[part.substring(0, index).trim()] =
+            part.substring(index + 1).trim();
+      }
+    }
+    return fields;
+  }
+
   int userId = 0;
 
   @override
@@ -37,24 +61,28 @@ class BiliBiliSite implements LiveSite {
   String buvid4 = "";
   String accessId = "";
   Future<Map<String, String>> getHeader() async {
-    if (buvid3.isEmpty) {
-      var buvidInfo = await getBuvid();
-      buvid3 = buvidInfo["b_3"] ?? "";
-      buvid4 = buvidInfo["b_4"] ?? "";
+    final snapshot = cookie;
+    final fields = cookieFields(snapshot);
+    buvid3 = fields['buvid3']?.isNotEmpty == true ? fields['buvid3']! : buvid3;
+    buvid4 = fields['buvid4']?.isNotEmpty == true ? fields['buvid4']! : buvid4;
+    if (buvid3.isEmpty || buvid4.isEmpty) {
+      final pending = _deviceRequest ??= getBuvid();
+      try {
+        final devices = await pending;
+        if (snapshot != cookie) return getHeader();
+        if (buvid3.isEmpty) buvid3 = '${devices['b_3'] ?? ''}';
+        if (buvid4.isEmpty) buvid4 = '${devices['b_4'] ?? ''}';
+      } finally {
+        if (identical(_deviceRequest, pending)) _deviceRequest = null;
+      }
     }
-    return cookie.isEmpty
-        ? {
-            "user-agent": kDefaultUserAgent,
-            "referer": kDefaultReferer,
-            "cookie": 'buvid3=$buvid3;buvid4=$buvid4;',
-          }
-        : {
-            "cookie": cookie.contains("buvid3")
-                ? cookie
-                : "$cookie;buvid3=$buvid3;buvid4=$buvid4;",
-            "user-agent": kDefaultUserAgent,
-            "referer": kDefaultReferer,
-          };
+    if (buvid3.isNotEmpty) fields['buvid3'] = buvid3;
+    if (buvid4.isNotEmpty) fields['buvid4'] = buvid4;
+    return {
+      'cookie': fields.entries.map((e) => '${e.key}=${e.value}').join('; '),
+      'user-agent': kDefaultUserAgent,
+      'referer': kDefaultReferer,
+    };
   }
 
   @override
@@ -121,87 +149,99 @@ class BiliBiliSite implements LiveSite {
     return LiveCategoryResult(hasMore: hasMore, items: items);
   }
 
+  Future<Map> _playInfo(String roomId, {int? qn}) async {
+    final result = await HttpClient.instance.getJson(
+        'https://api.live.bilibili.com/xlive/web-room/v2/index/getRoomPlayInfo',
+        queryParameters: {
+          'room_id': roomId,
+          'protocol': '0,1',
+          'format': '0,2',
+          'codec': '0',
+          'platform': 'web',
+          if (qn != null) 'qn': qn,
+        },
+        header: await getHeader());
+    final data =
+        result is Map && '${result['code']}' == '0' ? result['data'] : null;
+    final info = data is Map ? data['playurl_info'] : null;
+    final playurl = info is Map ? info['playurl'] : null;
+    if (playurl is! Map) throw CoreError('哔哩哔哩取流失败，请刷新或检查登录状态');
+    return playurl;
+  }
+
+  Iterable<Map> _codecs(Map playurl) sync* {
+    for (final stream in playurl['stream'] as List? ?? []) {
+      for (final format in stream['format'] as List? ?? []) {
+        for (final codec in format['codec'] as List? ?? []) {
+          if (codec is Map) yield codec;
+        }
+      }
+    }
+  }
+
+  Map<int, String> _qualityNames(Map playurl) => {
+        for (final q in playurl['g_qn_desc'] as List? ?? [])
+          if (int.tryParse('${q['qn']}') != null)
+            int.parse('${q['qn']}'): '${q['desc']}',
+      };
+
   @override
   Future<List<LivePlayQuality>> getPlayQualites(
       {required LiveRoomDetail detail}) async {
-    List<LivePlayQuality> qualities = [];
-    var result = await HttpClient.instance.getJson(
-      "https://api.live.bilibili.com/xlive/web-room/v2/index/getRoomPlayInfo",
-      queryParameters: {
-        "room_id": detail.roomId,
-        "protocol": "0,1",
-        "format": "0,1,2",
-        "codec": "0,1",
-        "platform": "web",
-      },
-      header: await getHeader(),
-    );
-    var qualitiesMap = <int, String>{};
-    for (var item in result["data"]["playurl_info"]["playurl"]["g_qn_desc"]) {
-      qualitiesMap[int.tryParse(item["qn"].toString()) ?? 0] =
-          item["desc"].toString();
+    final playurl = await _playInfo(detail.roomId);
+    final names = _qualityNames(playurl);
+    final rates = <int>{};
+    for (final codec in _codecs(playurl)) {
+      for (final value in codec['accept_qn'] as List? ?? []) {
+        final rate = int.tryParse('$value');
+        if (rate != null && rate > 0) rates.add(rate);
+      }
     }
-
-    for (var item in result["data"]["playurl_info"]["playurl"]["stream"][0]
-        ["format"][0]["codec"][0]["accept_qn"]) {
-      var qualityItem = LivePlayQuality(
-        quality: qualitiesMap[item] ?? "未知清晰度",
-        data: item,
-      );
-      qualities.add(qualityItem);
-    }
-    return qualities;
+    final sorted = rates.toList()..sort((a, b) => b.compareTo(a));
+    return sorted
+        .map((qn) => LivePlayQuality(quality: names[qn] ?? '清晰度 $qn', data: qn))
+        .toList();
   }
 
   @override
   Future<LivePlayUrl> getPlayUrls(
       {required LiveRoomDetail detail,
       required LivePlayQuality quality}) async {
-    List<String> urls = [];
-    var result = await HttpClient.instance.getJson(
-      "https://api.live.bilibili.com/xlive/web-room/v2/index/getRoomPlayInfo",
-      queryParameters: {
-        "room_id": detail.roomId,
-        "protocol": "0,1",
-        "format": "0,2",
-        "codec": "0",
-        "platform": "web",
-        "qn": quality.data,
-      },
-      header: await getHeader(),
-    );
-    var streamList = result["data"]["playurl_info"]["playurl"]["stream"];
-    for (var streamItem in streamList) {
-      var formatList = streamItem["format"];
-      for (var formatItem in formatList) {
-        var codecList = formatItem["codec"];
-        for (var codecItem in codecList) {
-          var urlList = codecItem["url_info"];
-          var baseUrl = codecItem["base_url"].toString();
-          for (var urlItem in urlList) {
-            urls.add(
-              "${urlItem["host"]}$baseUrl${urlItem["extra"]}",
-            );
-          }
-        }
+    final requested = int.parse('${quality.data}');
+    final playurl = await _playInfo(detail.roomId, qn: requested);
+    final names = _qualityNames(playurl);
+    final streams = <BiliBiliStream>[];
+    final seen = <String>{};
+    for (final codec in _codecs(playurl)) {
+      final rateText = '${codec['current_qn']}'.trim();
+      final rate = RegExp(r'^[1-9]\d*$').hasMatch(rateText)
+          ? int.tryParse(rateText)
+          : null;
+      final actual = rate != null && rate <= 9007199254740991 ? rate : null;
+      for (final item in codec['url_info'] as List? ?? []) {
+        final url =
+            '${item['host'] ?? ''}${codec['base_url'] ?? ''}${item['extra'] ?? ''}';
+        final uri = Uri.tryParse(url);
+        if (uri == null ||
+            !uri.hasAuthority ||
+            !['http', 'https'].contains(uri.scheme) ||
+            '${codec['base_url'] ?? ''}'.isEmpty ||
+            !seen.add(url)) continue;
+        streams.add(BiliBiliStream(
+            url: url,
+            requestedQn: requested,
+            actualQn: actual,
+            actualQuality:
+                actual == null ? '清晰度未确认' : names[actual] ?? '清晰度 $actual'));
       }
     }
-    // 对链接进行排序，包含mcdn的在后
-    urls.sort((a, b) {
-      if (a.contains("mcdn")) {
-        return 1;
-      } else {
-        return -1;
-      }
-    });
-    return LivePlayUrl(
-      urls: urls,
-      headers: {
-        "referer": "https://live.bilibili.com",
-        "user-agent":
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36 Edg/115.0.1901.188"
-      },
-    );
+    // Stable partition keeps the server's ordering within each CDN group.
+    final sorted = [
+      ...streams.where((s) => !Uri.parse(s.url).host.contains('mcdn')),
+      ...streams.where((s) => Uri.parse(s.url).host.contains('mcdn'))
+    ];
+    if (sorted.isEmpty) throw CoreError('哔哩哔哩没有可用播放地址');
+    return BiliBiliPlayUrl(sorted);
   }
 
   @override
@@ -296,6 +336,7 @@ class BiliBiliSite implements LiveSite {
         serverHost: serverHosts.isNotEmpty
             ? serverHosts.first
             : "broadcastlv.chat.bilibili.com",
+        serverPort: _danmakuPort(roomDanmakuResult['data']['host_list']),
         buvid: buvid3,
         cookie: cookie,
       ),
@@ -312,8 +353,14 @@ class BiliBiliSite implements LiveSite {
       queryParameters: queryParams,
       header: await getHeader(),
     );
-    print("【B站接口返回】roomId=$roomId, result=$result");
     return result["data"];
+  }
+
+  int _danmakuPort(dynamic hosts) {
+    final port = hosts is List && hosts.isNotEmpty
+        ? int.tryParse('${hosts.first['wss_port']}')
+        : null;
+    return port != null && port > 0 && port <= 65535 ? port : 443;
   }
 
   @override
@@ -438,13 +485,6 @@ class BiliBiliSite implements LiveSite {
   /// ```
   Future<Map> getBuvid() async {
     try {
-      if (cookie.contains("buvid3")) {
-        return {
-          "b_3": RegExp(r"buvid3=(.*?);").firstMatch(cookie)?.group(1) ?? "",
-          "b_4": RegExp(r"buvid4=(.*?);").firstMatch(cookie)?.group(1) ?? "",
-        };
-      }
-
       var result = await HttpClient.instance.getJson(
         "https://api.bilibili.com/x/frontend/finger/spi",
         queryParameters: {},
@@ -607,4 +647,26 @@ class BiliBiliSite implements LiveSite {
     accessId = id ?? "";
     return accessId;
   }
+}
+
+class BiliBiliStream {
+  final String url;
+  final int requestedQn;
+  final int? actualQn;
+  final String actualQuality;
+  bool get downgraded => actualQn != null && actualQn! < requestedQn;
+  BiliBiliStream(
+      {required this.url,
+      required this.requestedQn,
+      required this.actualQn,
+      required this.actualQuality});
+}
+
+class BiliBiliPlayUrl extends LivePlayUrl {
+  final List<BiliBiliStream> streams;
+  BiliBiliPlayUrl(this.streams)
+      : super(urls: streams.map((s) => s.url).toList(), headers: {
+          'user-agent': BiliBiliSite.kDefaultUserAgent,
+          'referer': BiliBiliSite.kDefaultReferer
+        });
 }

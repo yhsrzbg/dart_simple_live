@@ -15,12 +15,14 @@ class BiliBiliDanmakuArgs {
   final String token;
   final String buvid;
   final String serverHost;
+  final int serverPort;
   final int uid;
   final String cookie;
   BiliBiliDanmakuArgs({
     required this.roomId,
     required this.token,
     required this.serverHost,
+    this.serverPort = 443,
     required this.buvid,
     required this.uid,
     required this.cookie,
@@ -29,11 +31,11 @@ class BiliBiliDanmakuArgs {
   String toString() {
     return json.encode({
       "roomId": roomId,
-      "token": token,
+      "token": '<授权令牌>',
       "serverHost": serverHost,
       "buvid": buvid,
       "uid": uid,
-      "cookie": cookie,
+      "cookie": cookie.isEmpty ? '' : '<登录凭据>',
     });
   }
 }
@@ -57,13 +59,13 @@ class BiliBiliDanmaku implements LiveDanmaku {
   Future start(dynamic args) async {
     danmakuArgs = args as BiliBiliDanmakuArgs;
     webScoketUtils = WebScoketUtils(
-      url: "wss://${args.serverHost}/sub",
+      url: "wss://${args.serverHost}:${args.serverPort}/sub",
       heartBeatTime: heartbeatTime,
-      headers: args.cookie.isEmpty
-          ? null
-          : {
-              "cookie": args.cookie,
-            },
+      headers: {
+        'User-Agent': BiliBiliSite.kDefaultUserAgent,
+        'Referer': BiliBiliSite.kDefaultReferer,
+        if (args.cookie.isNotEmpty) 'cookie': args.cookie,
+      },
       onMessage: (e) {
         decodeMessage(e);
       },
